@@ -1,0 +1,14 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# 项目结构说明
+
+本项目的主要代码位于 [manus](mdc:manus) 目录。
+
+- 主入口为 [manus.go](mdc:manus/manus.go)，负责初始化工具、模型、回调和主流程。
+- [log.go](mdc:manus/log.go) 提供日志回调处理。
+- [prompt.go](mdc:manus/prompt.go) 定义系统提示词和交互提示。
+
+入口函数为 `main()`，位于 [manus.go](mdc:manus/manus.go) 顶部。
