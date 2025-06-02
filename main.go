@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -84,28 +86,78 @@ func runMCPClient(ctx context.Context, serverName string) []tool.BaseTool {
 	return tools
 }
 
-// 调用工具的处理逻辑，参数为*schema.Message，返回[]*schema.Message
-func handleToolCalls(ctx context.Context, tools []tool.BaseTool, msg *schema.Message) ([]*schema.Message, error) {
-	if msg.ToolCalls == nil {
-		return nil, nil
+type state struct {
+	history []*schema.Message
+}
+
+func newAgent(ctx context.Context, model model.ToolCallingChatModel, tools []tool.BaseTool) compose.Runnable[[]*schema.Message, []*schema.Message] {
+	var toolsInfo []*schema.ToolInfo
+	for _, t := range tools {
+		info, err := t.Info(ctx)
+		if err != nil {
+			log.Printf("GetToolInfo failed, err=%v", err)
+			continue
+		}
+		toolsInfo = append(toolsInfo, info)
 	}
+
+	model, err := model.WithTools(toolsInfo)
+	if err != nil {
+		log.Fatalf("初始化模型失败: %v", err)
+	}
+
 	toolsNode, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
 		Tools: tools,
 	})
 	if err != nil {
-		return nil, err
+		log.Fatalf("初始化工具节点失败: %v", err)
 	}
-	chain := compose.NewChain[*schema.Message, []*schema.Message]()
-	chain.AppendToolsNode(toolsNode)
-	a, err := chain.Compile(ctx)
+
+	condition := func(ctx context.Context, in *schema.Message) (string, error) {
+		if in.ToolCalls != nil {
+			return "tools_node", nil
+		}
+		return "lambda_node", nil
+	}
+
+	endNodes := map[string]bool{"tools_node": true, "lambda_node": true}
+	branch := compose.NewGraphBranch(condition, endNodes)
+	// 在 Graph 中使用
+	g := compose.NewGraph[[]*schema.Message, []*schema.Message](compose.WithGenLocalState(func(ctx context.Context) *state {
+		return &state{}
+	}))
+
+	preHandler := func(ctx context.Context, in *schema.Message, state *state) (*schema.Message, error) {
+		state.history = append(state.history, in)
+		return in, nil
+	}
+	postHandler := func(ctx context.Context, out []*schema.Message, state *state) ([]*schema.Message, error) {
+		state.history = append(state.history, out...)
+		return state.history, nil
+	}
+
+	g.AddChatModelNode("model_node", model, compose.WithStatePreHandler(postHandler))
+	g.AddToolsNode("tools_node", toolsNode, compose.WithStatePreHandler(preHandler))
+
+	lambda := compose.InvokableLambda(func(ctx context.Context, input *schema.Message) (output []*schema.Message, err error) {
+		return []*schema.Message{input}, nil
+	})
+	g.AddLambdaNode("lambda_node", lambda, compose.WithStatePostHandler(postHandler))
+	//g.AddBranch("Branch", branch)
+
+	g.AddEdge(compose.START, "model_node")
+	g.AddEdge("tools_node", "model_node")
+	g.AddBranch("model_node", branch)
+	g.AddEdge("lambda_node", compose.END)
+	// g.AddEdge("Branch", "tools_node")
+	// g.AddEdge("tools_node", compose.END)
+
+	a, err := g.Compile(ctx)
 	if err != nil {
-		return nil, err
+		log.Fatalf("编译失败: %v", err)
 	}
-	msgs, err := a.Invoke(ctx, msg)
-	if err != nil {
-		return nil, err
-	}
-	return msgs, nil
+
+	return a
 }
 
 func main() {
@@ -122,7 +174,7 @@ func main() {
 
 		info, err := t.Info(ctx)
 		if err != nil {
-			fmt.Errorf("GetToolInfo failed, err=%v", err)
+			log.Printf("GetToolInfo failed, err=%v", err)
 			continue
 		}
 		toolsInfo = append(toolsInfo, info)
@@ -155,38 +207,47 @@ func main() {
 	fmt.Println("欢迎使用OpenAI聊天机器人，输入内容并回车即可开始对话，输入exit退出。\n如需体验MCP功能，请用命令：go run main.go mcp context7")
 	var history []*schema.Message
 	history = append(history, &schema.Message{Role: schema.System, Content: systemPrompt})
-	fmt.Print("你: ")
-	input, _ := reader.ReadString('\n')
-	input = input[:len(input)-1]
-	if input == "exit" {
-		return
-	}
-	history = append(history, &schema.Message{Role: schema.User, Content: input})
-	resp, err := withTools.Generate(ctx, history)
-	if err != nil {
-		log.Printf("请求失败: %v", err)
-		return
-	}
 
-	history = append(history, resp)
-	//检查是否调用了工具
-	if resp.ToolCalls != nil {
-		msgs, err := handleToolCalls(ctx, tools, resp)
-		if err != nil {
-			log.Printf("工具调用处理失败: %v", err)
+	agent := newAgent(ctx, withTools, tools)
+
+	for {
+		fmt.Print("你: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input) // 去除换行符和可能的空格
+
+		if input == "exit" {
+			fmt.Println("再见！")
 			return
 		}
-		history = append(history, msgs...)
-		fmt.Printf("%+v\n", history)
-	}
 
-	resp, err = withTools.Generate(ctx, history)
-	if err != nil {
-		log.Printf("请求失败: %v", err)
-		return
+		if input == "" {
+			continue
+		}
+
+		history = append(history, &schema.Message{Role: schema.User, Content: input})
+
+		msgs, err := agent.Invoke(ctx, history)
+		if err != nil {
+			log.Printf("请求失败: %v", err)
+			// 如果请求失败，可以选择是否将错误信息也加入历史，或者直接继续下一次对话
+			// 这里我们选择不将错误加入历史，直接继续
+			// 也可以考虑从history中移除最后一条用户消息，避免影响后续对话
+			if len(history) > 0 {
+				history = history[:len(history)-1]
+			}
+			continue
+		}
+
+		fmt.Printf("%+v\n", msgs)
+		// 打印并记录模型的回复
+		if len(msgs) > 0 {
+			// 假设agent.Invoke返回的是一个包含最新回复的Message列表
+			// 通常我们关心的是最后一个Message，即AI的回复
+			aiResponse := msgs[len(msgs)-1]
+			fmt.Printf("AI: %s\n", aiResponse.Content)
+			history = append(history, aiResponse) // 将AI的回复也加入历史
+		} else {
+			fmt.Println("AI: (无回复)")
+		}
 	}
-	history = append(history, resp)
-	fmt.Printf("%+v\n", history)
-	fmt.Printf("%+v\n", resp)
-	fmt.Printf("AI: %s\n", resp.Content)
 }
