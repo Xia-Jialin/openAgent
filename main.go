@@ -91,6 +91,37 @@ type state struct {
 }
 
 func newAgent(ctx context.Context, model model.ToolCallingChatModel, tools []tool.BaseTool) compose.Runnable[[]*schema.Message, []*schema.Message] {
+	// 获取工具信息
+	toolsInfo := getToolsInfo(ctx, tools)
+
+	// 为模型绑定工具
+	model, err := model.WithTools(toolsInfo)
+	if err != nil {
+		log.Fatalf("初始化模型失败: %v", err)
+	}
+
+	// 初始化工具节点
+	toolsNode := initToolsNode(ctx, tools)
+
+	// 创建图实例
+	g := compose.NewGraph[[]*schema.Message, []*schema.Message](compose.WithGenLocalState(func(ctx context.Context) *state {
+		return &state{}
+	}))
+
+	// 添加节点和边
+	addNodesAndEdges(g, model, toolsNode)
+
+	// 编译图
+	a, err := g.Compile(ctx)
+	if err != nil {
+		log.Fatalf("编译失败: %v", err)
+	}
+
+	return a
+}
+
+// 获取工具信息
+func getToolsInfo(ctx context.Context, tools []tool.BaseTool) []*schema.ToolInfo {
 	var toolsInfo []*schema.ToolInfo
 	for _, t := range tools {
 		info, err := t.Info(ctx)
@@ -100,33 +131,23 @@ func newAgent(ctx context.Context, model model.ToolCallingChatModel, tools []too
 		}
 		toolsInfo = append(toolsInfo, info)
 	}
+	return toolsInfo
+}
 
-	model, err := model.WithTools(toolsInfo)
-	if err != nil {
-		log.Fatalf("初始化模型失败: %v", err)
-	}
-
+// 初始化工具节点
+func initToolsNode(ctx context.Context, tools []tool.BaseTool) *compose.ToolsNode {
 	toolsNode, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
 		Tools: tools,
 	})
 	if err != nil {
 		log.Fatalf("初始化工具节点失败: %v", err)
 	}
+	return toolsNode
+}
 
-	condition := func(ctx context.Context, in *schema.Message) (string, error) {
-		if in.ToolCalls != nil {
-			return "tools_node", nil
-		}
-		return "lambda_node", nil
-	}
-
-	endNodes := map[string]bool{"tools_node": true, "lambda_node": true}
-	branch := compose.NewGraphBranch(condition, endNodes)
-	// 在 Graph 中使用
-	g := compose.NewGraph[[]*schema.Message, []*schema.Message](compose.WithGenLocalState(func(ctx context.Context) *state {
-		return &state{}
-	}))
-
+// 添加节点和边
+func addNodesAndEdges(g *compose.Graph[[]*schema.Message, []*schema.Message], model model.ToolCallingChatModel, toolsNode *compose.ToolsNode) {
+	// 定义处理器
 	preHandler := func(ctx context.Context, in *schema.Message, state *state) (*schema.Message, error) {
 		state.history = append(state.history, in)
 		return in, nil
@@ -136,28 +157,33 @@ func newAgent(ctx context.Context, model model.ToolCallingChatModel, tools []too
 		return state.history, nil
 	}
 
+	// 添加模型节点
 	g.AddChatModelNode("model_node", model, compose.WithStatePreHandler(postHandler))
+
+	// 添加工具节点
 	g.AddToolsNode("tools_node", toolsNode, compose.WithStatePreHandler(preHandler))
 
+	// 添加Lambda节点
 	lambda := compose.InvokableLambda(func(ctx context.Context, input *schema.Message) (output []*schema.Message, err error) {
 		return []*schema.Message{input}, nil
 	})
 	g.AddLambdaNode("lambda_node", lambda, compose.WithStatePostHandler(postHandler))
-	//g.AddBranch("Branch", branch)
 
+	// 添加分支条件
+	condition := func(ctx context.Context, in *schema.Message) (string, error) {
+		if in.ToolCalls != nil {
+			return "tools_node", nil
+		}
+		return "lambda_node", nil
+	}
+	endNodes := map[string]bool{"tools_node": true, "lambda_node": true}
+	branch := compose.NewGraphBranch(condition, endNodes)
+
+	// 添加边
 	g.AddEdge(compose.START, "model_node")
 	g.AddEdge("tools_node", "model_node")
 	g.AddBranch("model_node", branch)
 	g.AddEdge("lambda_node", compose.END)
-	// g.AddEdge("Branch", "tools_node")
-	// g.AddEdge("tools_node", compose.END)
-
-	a, err := g.Compile(ctx)
-	if err != nil {
-		log.Fatalf("编译失败: %v", err)
-	}
-
-	return a
 }
 
 func main() {
