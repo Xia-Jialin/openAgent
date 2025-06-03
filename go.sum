@@ -25,8 +25,8 @@ github.com/chromedp/sysutil v1.1.0 h1:PUFNv5EcprjqXZD9nJb9b/c9ibAbxiYo4exNWZyipw
 github.com/chromedp/sysutil v1.1.0/go.mod h1:WiThHUdltqCNKGc4gaU50XgYjwjYIhKWoHGPTUfWTJ8=
 github.com/cloudwego/base64x v0.1.5 h1:XPciSp1xaq2VCSt6lF0phncD4koWyULpl5bUxbfCyP4=
 github.com/cloudwego/base64x v0.1.5/go.mod h1:0zlkT4Wn5C6NdauXdJRhSKRlJvmclQ1hhJgA0rcu/8w=
-github.com/cloudwego/eino v0.3.37 h1:UliGEzM88vVMmG9g2kZCyosaVbg7Rz0dNARs1c0HVs8=
-github.com/cloudwego/eino v0.3.37/go.mod h1:wUjz990apdsaOraOXdh6CdhVXq8DJsOvLsVlxNTcNfY=
+github.com/cloudwego/eino v0.3.38 h1:X6e+rL/RReZEtqgslTnoc0n7M2RFDt0e0mI/R+m2tkc=
+github.com/cloudwego/eino v0.3.38/go.mod h1:wUjz990apdsaOraOXdh6CdhVXq8DJsOvLsVlxNTcNfY=
 github.com/cloudwego/eino-ext/callbacks/langfuse v0.0.0-20250527025003-c8588b6dc7a9 h1:7R9p1nNAXDws4xcTVmaKeH5Xjd53xaCwc7zcOHclLzs=
 github.com/cloudwego/eino-ext/callbacks/langfuse v0.0.0-20250527025003-c8588b6dc7a9/go.mod h1:OCmmEBkdGiuJ6+/onF3k8k4jlDzE0QCYFSVwq0dWe+Y=
 github.com/cloudwego/eino-ext/components/model/openai v0.0.0-20250527025003-c8588b6dc7a9 h1:+KnD5OSQYojBZdnD+kpFW3y5D+EBxfcJakm60rh+i8E=

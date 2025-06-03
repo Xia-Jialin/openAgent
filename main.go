@@ -20,6 +20,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	mytool "openAgent/tool"
 )
 
 const systemPrompt = `\nYou are OpenManus, an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.\n`
@@ -47,43 +48,46 @@ func loadMCPConfig(path string) (*MCPConfig, error) {
 }
 
 // 启动MCP服务器并连接
-func runMCPClient(ctx context.Context, serverName string) []tool.BaseTool {
-
+func runMCPClient(ctx context.Context) []tool.BaseTool {
 	cfg, err := loadMCPConfig("mcp.json")
 	if err != nil {
 		log.Fatalf("读取mcp.json失败: %v", err)
 	}
 	fmt.Println(cfg)
 
-	stdioTransport := transport.NewStdio(cfg.McpServers[serverName].Command, nil, cfg.McpServers[serverName].Args...)
+	allTools := []tool.BaseTool{}
+	for _, server := range cfg.McpServers {
+		stdioTransport := transport.NewStdio(server.Command, nil, server.Args...)
 
-	c := client.NewClient(stdioTransport)
+		c := client.NewClient(stdioTransport)
 
-	err = c.Start(ctx)
-	if err != nil {
-		log.Fatalf("启动MCP客户端失败: %v", err)
-	}
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initRequest.Params.ClientInfo = mcp.Implementation{
-		Name:    "MCP-Go Simple Client Example",
-		Version: "1.0.0",
-	}
-	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
-	serverInfo, err := c.Initialize(ctx, initRequest)
-	if err != nil {
-		log.Fatalf("Failed to initialize: %v", err)
-	}
-	fmt.Println(serverInfo)
+		err = c.Start(ctx)
+		if err != nil {
+			log.Fatalf("启动MCP客户端失败: %v", err)
+		}
+		initRequest := mcp.InitializeRequest{}
+		initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		initRequest.Params.ClientInfo = mcp.Implementation{
+			Name:    "MCP-Go Simple Client Example",
+			Version: "1.0.0",
+		}
+		initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+		serverInfo, err := c.Initialize(ctx, initRequest)
+		if err != nil {
+			log.Fatalf("Failed to initialize: %v", err)
+		}
+		fmt.Println(serverInfo)
 
-	tools, err := toolMcp.GetTools(ctx, &toolMcp.Config{
-		Cli: c,
-	})
-	if err != nil {
-		panic(err)
+		tools, err := toolMcp.GetTools(ctx, &toolMcp.Config{
+			Cli: c,
+		})
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("%+v\n", tools)
+		allTools = append(allTools, tools...)
 	}
-	fmt.Printf("%+v\n", tools)
-	return tools
+	return allTools
 }
 
 type state struct {
@@ -192,7 +196,12 @@ func main() {
 	// 加载.env文件
 	_ = godotenv.Load()
 
-	tools := runMCPClient(ctx, os.Args[2])
+	tools := runMCPClient(ctx)
+	deleteFileTool, err := mytool.NewDeleteFileTool()
+	if err != nil {
+		log.Fatalf("初始化删除文件工具失败: %v", err)
+	}
+	tools = append(tools, deleteFileTool)
 
 	// 获取工具信息
 	var toolsInfo []*schema.ToolInfo

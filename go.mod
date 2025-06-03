@@ -3,7 +3,7 @@ module openAgent
 go 1.24.1
 
 require (
-	github.com/cloudwego/eino v0.3.37
+	github.com/cloudwego/eino v0.3.38
 	github.com/cloudwego/eino-ext/callbacks/langfuse v0.0.0-20250527025003-c8588b6dc7a9
 	github.com/cloudwego/eino-ext/components/model/openai v0.0.0-20250527025003-c8588b6dc7a9
 	github.com/cloudwego/eino-ext/components/tool/browseruse v0.0.0-20250527025003-c8588b6dc7a9
