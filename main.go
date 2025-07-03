@@ -1,19 +1,20 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
-	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 
 	"openAgent/agent"
@@ -198,6 +199,7 @@ func main() {
 	// 加载.env文件
 	_ = godotenv.Load()
 
+	// --- 初始化 Agent ---
 	tools := runMCPClient(ctx)
 	deleteFileTool, err := mytool.NewDeleteFileTool()
 	if err != nil {
@@ -205,96 +207,84 @@ func main() {
 	}
 	tools = append(tools, deleteFileTool)
 
-	// 获取工具信息
-	var toolsInfo []*schema.ToolInfo
-	for _, t := range tools {
-
-		info, err := t.Info(ctx)
-		if err != nil {
-			log.Printf("GetToolInfo failed, err=%v", err)
-			continue
-		}
-		toolsInfo = append(toolsInfo, info)
-	}
-
 	apiKey := os.Getenv("OPENAI_API_KEY")
-	model := os.Getenv("OPENAI_MODEL_NAME")
+	modelName := os.Getenv("OPENAI_MODEL_NAME")
 	baseURL := os.Getenv("OPENAI_BASE_URL")
-	if apiKey == "" || model == "" {
+	if apiKey == "" || modelName == "" {
 		log.Fatal("请设置OPENAI_API_KEY和OPENAI_MODEL_NAME环境变量")
 	}
 	var temp float32 = 0.7
 	cm, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		APIKey:      apiKey,
 		BaseURL:     baseURL,
-		Model:       model,
+		Model:       modelName,
 		Temperature: &temp,
 	})
 	if err != nil {
 		log.Fatalf("初始化OpenAI模型失败: %v", err)
 	}
+	coderAgent := agent.NewCoderAgent(ctx, cm, tools)
+	// --- Agent 初始化完成 ---
 
-	// 为模型绑定工具
-	// withTools, err := cm.WithTools(toolsInfo)
-	// if err != nil {
-	// 	panic(err)
-	// }
+	r := gin.Default()
 
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("欢迎使用OpenAI聊天机器人，输入内容并回车即可开始对话，输入exit退出。\n如需体验MCP功能，请用命令：go run main.go mcp context7")
-	var history []*schema.Message
-	history = append(history, &schema.Message{Role: schema.System, Content: systemPrompt})
+	// 提供静态文件服务
+	r.Static("/static", "./web/static")
 
-	//agent := newAgent(ctx, withTools, tools)
-	agent := agent.NewCoderAgent(ctx, cm, tools)
+	// 提供主页
+	r.GET("/", func(c *gin.Context) {
+		c.File("./web/index.html")
+	})
 
-	for {
-		fmt.Print("你: ")
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input) // 去除换行符和可能的空格
-
-		if input == "exit" {
-			fmt.Println("再见！")
+	// 处理聊天请求
+	r.POST("/chat", func(c *gin.Context) {
+		var userInput struct {
+			Content string `json:"content"`
+		}
+		if err := c.ShouldBindJSON(&userInput); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 			return
 		}
 
-		if input == "" {
-			continue
-		}
+		// 设置SSE头
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("Access-Control-Allow-Origin", "*")
 
-		history = append(history, &schema.Message{Role: schema.User, Content: input})
-
-		msgs, err := agent.StreamRun(ctx, input)
-		if err != nil {
-			log.Printf("请求失败: %v", err)
-			// 如果请求失败，可以选择是否将错误信息也加入历史，或者直接继续下一次对话
-			// 这里我们选择不将错误加入历史，直接继续
-			// 也可以考虑从history中移除最后一条用户消息，避免影响后续对话
-			if len(history) > 0 {
-				history = history[:len(history)-1]
-			}
-			continue
-		}
-		//实现打字机效果
-		fmt.Print("AI: ")
-		var fullResponse strings.Builder
-		for {
-			msg, ok := <-msgs
-			if !ok {
-				break
+		// 流式响应
+		c.Stream(func(w io.Writer) bool {
+			// 获取流式输出
+			msgs, err := coderAgent.StreamRun(ctx, userInput.Content)
+			if err != nil {
+				log.Printf("请求失败: %v", err)
+				// 发送错误事件
+				c.SSEvent("error", gin.H{"error": err.Error()})
+				return false // 关闭流
 			}
 
-			if msg.ToolCalls != nil {
-				log.Printf("msg: %+v", msg.ToolCalls)
+			// 循环读取流
+			for msg := range msgs {
+				// 将消息序列化为JSON
+				msgJSON, err := json.Marshal(msg)
+				if err != nil {
+					log.Printf("序列化消息失败: %v", err)
+					continue
+				}
+				// 发送SSE数据
+				c.SSEvent("message", string(msgJSON))
+				// 推送数据到客户端
+				c.Writer.Flush()
 			}
-			fmt.Print(msg.Content)
-			fullResponse.WriteString(msg.Content)
-		}
-		fmt.Println() // 换行
+			// 流结束
+			c.SSEvent("message", gin.H{"is_end": true})
+			c.Writer.Flush()
+			return false // 表示流结束
+		})
+	})
 
-		// 将完整的AI回复添加到历史记录中
-		if fullResponse.Len() > 0 {
-			history = append(history, &schema.Message{Role: schema.Assistant, Content: fullResponse.String()})
-		}
+	fmt.Println("服务已启动，请访问 http://localhost:8080")
+	if err := r.Run(":8080"); err != nil {
+		log.Fatalf("启动Gin服务失败: %v", err)
 	}
 }
