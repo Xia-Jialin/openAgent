@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -30,7 +31,11 @@ var (
 	mu       sync.Mutex
 )
 
-const systemPrompt = `\nYou are OpenManus, an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.\n`
+const baseSystemPrompt = `
+You are OpenManus, an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.
+
+You have a dedicated workspace. When using file-related tools (such as list_files, write_file, read_file, delete_file), all file paths should be relative to your workspace. Do not use absolute paths.
+`
 
 type MCPConfig struct {
 	McpServers map[string]struct {
@@ -104,12 +109,24 @@ func main() {
 	_ = godotenv.Load()
 
 	// --- 初始化 Agent ---
-	tools := runMCPClient(ctx)
+	allTools := runMCPClient(ctx)
 	deleteFileTool, err := mytool.NewDeleteFileTool()
 	if err != nil {
 		log.Fatalf("初始化删除文件工具失败: %v", err)
 	}
-	tools = append(tools, deleteFileTool)
+	listFilesTool, err := mytool.NewListFilesTool()
+	if err != nil {
+		log.Fatalf("初始化列出文件工具失败: %v", err)
+	}
+	writeFileTool, err := mytool.NewWriteFileTool()
+	if err != nil {
+		log.Fatalf("初始化写入文件工具失败: %v", err)
+	}
+	readFileTool, err := mytool.NewReadFileTool()
+	if err != nil {
+		log.Fatalf("初始化读取文件工具失败: %v", err)
+	}
+	allTools = append(allTools, deleteFileTool, listFilesTool, writeFileTool, readFileTool)
 
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	modelName := os.Getenv("OPENAI_MODEL_NAME")
@@ -187,7 +204,21 @@ func main() {
 				return
 			}
 			userInput.SessionID = uuid.New().String()
-			currentAgent = agent.NewCoderAgent(ctx, newCm, tools, systemPrompt)
+
+			// 为新会话创建工作目录
+			workDir := filepath.Join("workspace", userInput.SessionID)
+			if err := os.MkdirAll(workDir, 0755); err != nil {
+				log.Printf("为新会话创建工作目录失败: %v", err)
+				mu.Unlock()
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create new session workspace"})
+				return
+			}
+
+			// 为新会话创建工具副本
+			// sessionTools := make([]tool.BaseTool, len(allTools))
+			// copy(sessionTools, allTools)
+
+			currentAgent = agent.NewCoderAgent(ctx, newCm, allTools, baseSystemPrompt, workDir)
 			sessions[userInput.SessionID] = currentAgent
 		}
 		mu.Unlock()
