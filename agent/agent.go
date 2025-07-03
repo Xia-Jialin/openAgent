@@ -13,6 +13,7 @@ type Agent interface {
 	Run(ctx context.Context, input string) (*schema.Message, error)
 	//流式输出，返回通道，通道中是消息，仅输出，不写入
 	StreamRun(ctx context.Context, input string) (<-chan *schema.Message, error)
+	GetHistory() []*schema.Message
 }
 
 type coderAgent struct {
@@ -65,14 +66,32 @@ func (a *coderAgent) StreamRun(ctx context.Context, input string) (<-chan *schem
 	}
 	ch := make(chan *schema.Message)
 	go func() {
+		defer close(ch)
+		var assistantMessage *schema.Message
 		for {
-			msg, err := stream.Recv()
+			msgPart, err := stream.Recv()
 			if err != nil {
-				close(ch)
+				if assistantMessage != nil {
+					a.history = append(a.history, assistantMessage)
+				}
 				return
 			}
-			ch <- msg
+
+			if assistantMessage == nil {
+				assistantMessage = &schema.Message{
+					Role: msgPart.Role,
+				}
+			}
+			assistantMessage.Content += msgPart.Content
+			if len(msgPart.ToolCalls) > 0 {
+				assistantMessage.ToolCalls = append(assistantMessage.ToolCalls, msgPart.ToolCalls...)
+			}
+			ch <- msgPart
 		}
 	}()
 	return ch, nil
+}
+
+func (a *coderAgent) GetHistory() []*schema.Message {
+	return a.history
 }

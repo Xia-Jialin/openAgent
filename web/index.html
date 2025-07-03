@@ -6,11 +6,18 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div id="chat-container">
-        <div id="chat-box"></div>
-        <div id="input-container">
-            <input type="text" id="message-input" placeholder="Type your message...">
-            <button id="send-button">Send</button>
+    <div id="container">
+        <div id="sidebar">
+            <h2>Sessions</h2>
+            <ul id="session-list"></ul>
+        </div>
+        <div id="chat-container">
+            <div id="chat-box"></div>
+            <div id="input-container">
+                <input type="text" id="message-input" placeholder="Type your message...">
+                <button id="send-button">Send</button>
+                <button id="new-chat-button">New Chat</button>
+            </div>
         </div>
     </div>
     <script src="/static/script.js"></script>

@@ -1,8 +1,94 @@
 document.addEventListener("DOMContentLoaded", function() {
     const messageInput = document.getElementById("message-input");
     const sendButton = document.getElementById("send-button");
+    const newChatButton = document.getElementById("new-chat-button");
     const chatBox = document.getElementById("chat-box");
-    let eventSource;
+    const sessionList = document.getElementById("session-list");
+    let sessionId = null; // 用于存储会话ID
+    let isNewSession = true; // 标记是否为新会话
+
+    function startNewChat() {
+        sessionId = null;
+        isNewSession = true;
+        chatBox.innerHTML = '';
+        addMessage("system", "New chat started. Type your message and press Enter.");
+        // 取消会话列表中的激活状态
+        const currentlyActive = sessionList.querySelector('.active');
+        if (currentlyActive) {
+            currentlyActive.classList.remove('active');
+        }
+        console.log("New chat session started.");
+    }
+
+    async function fetchAndDisplaySessions() {
+        try {
+            const response = await fetch('/sessions');
+            const sessions = await response.json();
+            sessionList.innerHTML = '';
+            sessions.forEach(id => {
+                const li = document.createElement('li');
+                li.textContent = id;
+                li.dataset.sessionId = id;
+                if (id === sessionId) {
+                    li.classList.add('active');
+                }
+                li.addEventListener('click', () => {
+                    loadSession(id);
+                });
+                sessionList.appendChild(li);
+            });
+        } catch (error) {
+            console.error('Failed to fetch sessions:', error);
+        }
+    }
+
+    async function loadSession(id) {
+        console.log("Loading session:", id);
+        try {
+            const response = await fetch(`/chat/history?session_id=${id}`);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch history: ${response.statusText}`);
+            }
+            const history = await response.json();
+            chatBox.innerHTML = '';
+            history.forEach(msg => {
+                const role = msg.role || 'system';
+                const content = msg.content || '';
+                const toolCalls = msg.tool_calls;
+
+                // Render content if it exists
+                if (content) {
+                    addMessage(role, content, false);
+                }
+
+                // Render tool calls if they exist
+                if (toolCalls && toolCalls.length > 0) {
+                    const toolCallContent = toolCalls.map(tc => {
+                        const functionCall = tc.function;
+                        return `Tool Call: ${functionCall.name}\nArguments: ${functionCall.arguments}`;
+                    }).join('\n\n');
+                    // Tool calls are always from the assistant
+                    addMessage('assistant', toolCallContent, true);
+                }
+            });
+            sessionId = id;
+            isNewSession = false;
+            
+            // 更新会话列表的激活状态
+            const currentlyActive = sessionList.querySelector('.active');
+            if (currentlyActive) {
+                currentlyActive.classList.remove('active');
+            }
+            const newActiveItem = sessionList.querySelector(`li[data-session-id="${id}"]`);
+            if (newActiveItem) {
+                newActiveItem.classList.add('active');
+            }
+
+        } catch (error) {
+            console.error('Failed to load session:', error);
+            addMessage("system", `Error loading session ${id}.`);
+        }
+    }
 
     function sendMessage() {
         const content = messageInput.value.trim();
@@ -13,40 +99,8 @@ document.addEventListener("DOMContentLoaded", function() {
         addMessage("user", content);
         messageInput.value = "";
         
-        // 如果已存在EventSource，先关闭
-        if (eventSource) {
-            eventSource.close();
-        }
-
-        // 使用POST请求来启动SSE连接
-        fetch('/chat', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ content: content }),
-        }).then(response => {
-            // 这里我们不处理response的body，因为真正的消息会通过SSE过来
-            // 但我们需要一个新的EventSource来接收消息
-            // 注意：这种模式有点非标准，通常GET请求用于启动SSE
-            // 但为了传递用户输入，我们用POST来"触发"流
-            // 真正的流数据需要一个新的连接来接收
-            // 一个更标准的做法是POST请求本身返回流。让我们坚持之前的fetch流实现。
-            // 不，我将坚持使用EventSource，但需要调整后端的实现。
-            
-            // 让我们调整前端逻辑来匹配新的设想
-            // 用户点击发送后，我们将启动一个新的EventSource
-            // 为了传递消息，我们将其作为URL参数
-            
-            // 放弃fetch，直接使用EventSource并带上参数
-            // 这要求后端/chat是GET请求
-            // 让我们改回fetch流读取，因为这更符合POST语义
-             handleStreamResponse(content);
-
-        }).catch(error => {
-            console.error('Error starting chat session:', error);
-            addMessage("system", "Error starting chat session.");
-        });
+        // 直接调用流处理函数，避免重复请求
+        handleStreamResponse(content);
     }
     
     async function handleStreamResponse(content) {
@@ -56,7 +110,7 @@ document.addEventListener("DOMContentLoaded", function() {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ content: content }),
+                body: JSON.stringify({ content: content, session_id: sessionId }),
             });
 
             if (!response.body) {
@@ -91,12 +145,26 @@ document.addEventListener("DOMContentLoaded", function() {
                             if (!data) continue;
                             
                             try {
-                                const msg = JSON.parse(data);
+                                const eventData = JSON.parse(data);
 
-                                if (msg.is_end) {
-                                    assistantMessageElement = null;
-                                    continue; 
+                                if (eventData.session_id) {
+                                    if(isNewSession) {
+                                        sessionId = eventData.session_id;
+                                        isNewSession = false;
+                                        console.log("New session ID set:", sessionId);
+                                        fetchAndDisplaySessions(); // 刷新会话列表
+                                    }
                                 }
+                                
+                                const msgData = eventData.data;
+                                if (!msgData) {
+                                    if (eventData.is_end) {
+                                        assistantMessageElement = null;
+                                    }
+                                    continue;
+                                }
+
+                                const msg = JSON.parse(msgData);
 
                                 if (msg.tool_calls && msg.tool_calls.length > 0) {
                                     const toolCallContent = msg.tool_calls.map(tc => 
@@ -156,6 +224,7 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     sendButton.addEventListener("click", sendMessage);
+    newChatButton.addEventListener("click", startNewChat);
     messageInput.addEventListener("keypress", function(event) {
         if (event.key === "Enter") {
             sendMessage();
@@ -163,4 +232,5 @@ document.addEventListener("DOMContentLoaded", function() {
     });
     
     addMessage("system", "Welcome to OpenAgent. Type your message and press Enter.");
+    fetchAndDisplaySessions(); // 初始加载会话列表
 }); 
