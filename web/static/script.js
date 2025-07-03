@@ -12,11 +12,25 @@ document.addEventListener("DOMContentLoaded", function() {
         isNewSession = true;
         chatBox.innerHTML = '';
         addMessage("system", "New chat started. Type your message and press Enter.");
-        // 取消会话列表中的激活状态
+        
+        // 更新会话列表UI
         const currentlyActive = sessionList.querySelector('.active');
         if (currentlyActive) {
             currentlyActive.classList.remove('active');
         }
+
+        // 移除临时的 "New Chat" 项（如果存在）
+        const tempNewChatItem = sessionList.querySelector('.new-chat-temp');
+        if (tempNewChatItem) {
+            tempNewChatItem.remove();
+        }
+
+        // 添加一个临时的 "New Chat" 项
+        const newChatLi = document.createElement('li');
+        newChatLi.textContent = "New Chat";
+        newChatLi.classList.add('active', 'new-chat-temp');
+        sessionList.prepend(newChatLi);
+
         console.log("New chat session started.");
     }
 
@@ -152,6 +166,13 @@ document.addEventListener("DOMContentLoaded", function() {
                                         sessionId = eventData.session_id;
                                         isNewSession = false;
                                         console.log("New session ID set:", sessionId);
+                                        
+                                        // 移除临时的 "New Chat" 项
+                                        const tempNewChatItem = sessionList.querySelector('.new-chat-temp');
+                                        if (tempNewChatItem) {
+                                            tempNewChatItem.remove();
+                                        }
+
                                         fetchAndDisplaySessions(); // 刷新会话列表
                                     }
                                 }
@@ -231,6 +252,6 @@ document.addEventListener("DOMContentLoaded", function() {
         }
     });
     
-    addMessage("system", "Welcome to OpenAgent. Type your message and press Enter.");
+    startNewChat(); // 页面加载时直接开始一个新会话
     fetchAndDisplaySessions(); // 初始加载会话列表
 }); 
