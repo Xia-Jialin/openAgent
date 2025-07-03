@@ -16,11 +16,13 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/joho/godotenv"
 
+	"openAgent/agent"
+	mytool "openAgent/tool"
+
 	toolMcp "github.com/cloudwego/eino-ext/components/tool/mcp"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
-	mytool "openAgent/tool"
 )
 
 const systemPrompt = `\nYou are OpenManus, an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.\n`
@@ -233,17 +235,18 @@ func main() {
 	}
 
 	// 为模型绑定工具
-	withTools, err := cm.WithTools(toolsInfo)
-	if err != nil {
-		panic(err)
-	}
+	// withTools, err := cm.WithTools(toolsInfo)
+	// if err != nil {
+	// 	panic(err)
+	// }
 
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("欢迎使用OpenAI聊天机器人，输入内容并回车即可开始对话，输入exit退出。\n如需体验MCP功能，请用命令：go run main.go mcp context7")
 	var history []*schema.Message
 	history = append(history, &schema.Message{Role: schema.System, Content: systemPrompt})
 
-	agent := newAgent(ctx, withTools, tools)
+	//agent := newAgent(ctx, withTools, tools)
+	agent := agent.NewCoderAgent(ctx, cm, tools)
 
 	for {
 		fmt.Print("你: ")
@@ -261,7 +264,7 @@ func main() {
 
 		history = append(history, &schema.Message{Role: schema.User, Content: input})
 
-		msgs, err := agent.Invoke(ctx, history)
+		msgs, err := agent.StreamRun(ctx, input)
 		if err != nil {
 			log.Printf("请求失败: %v", err)
 			// 如果请求失败，可以选择是否将错误信息也加入历史，或者直接继续下一次对话
@@ -272,17 +275,26 @@ func main() {
 			}
 			continue
 		}
+		//实现打字机效果
+		fmt.Print("AI: ")
+		var fullResponse strings.Builder
+		for {
+			msg, ok := <-msgs
+			if !ok {
+				break
+			}
 
-		fmt.Printf("%+v\n", msgs)
-		// 打印并记录模型的回复
-		if len(msgs) > 0 {
-			// 假设agent.Invoke返回的是一个包含最新回复的Message列表
-			// 通常我们关心的是最后一个Message，即AI的回复
-			aiResponse := msgs[len(msgs)-1]
-			fmt.Printf("AI: %s\n", aiResponse.Content)
-			history = append(history, aiResponse) // 将AI的回复也加入历史
-		} else {
-			fmt.Println("AI: (无回复)")
+			if msg.ToolCalls != nil {
+				log.Printf("msg: %+v", msg.ToolCalls)
+			}
+			fmt.Print(msg.Content)
+			fullResponse.WriteString(msg.Content)
+		}
+		fmt.Println() // 换行
+
+		// 将完整的AI回复添加到历史记录中
+		if fullResponse.Len() > 0 {
+			history = append(history, &schema.Message{Role: schema.Assistant, Content: fullResponse.String()})
 		}
 	}
 }
