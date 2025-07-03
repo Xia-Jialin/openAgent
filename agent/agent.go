@@ -16,13 +16,12 @@ type Agent interface {
 }
 
 type coderAgent struct {
-	systemPromptMessage schema.Message
-	model               model.ToolCallingChatModel
-	tools               []tool.BaseTool
-	history             []*schema.Message
+	model   model.ToolCallingChatModel
+	tools   []tool.BaseTool
+	history []*schema.Message
 }
 
-func NewCoderAgent(ctx context.Context, model model.ToolCallingChatModel, tools []tool.BaseTool) *coderAgent {
+func NewCoderAgent(ctx context.Context, model model.ToolCallingChatModel, tools []tool.BaseTool, systemPrompt string) *coderAgent {
 	toolsInfo := make([]*schema.ToolInfo, len(tools))
 	for i, tool := range tools {
 		toolInfo, err := tool.Info(ctx)
@@ -32,7 +31,11 @@ func NewCoderAgent(ctx context.Context, model model.ToolCallingChatModel, tools 
 		toolsInfo[i] = toolInfo
 	}
 	model.WithTools(toolsInfo)
-	return &coderAgent{model: model, tools: tools}
+	systemMessage := &schema.Message{
+		Role:    schema.System,
+		Content: systemPrompt,
+	}
+	return &coderAgent{model: model, tools: tools, history: []*schema.Message{systemMessage}}
 }
 
 func (a *coderAgent) Run(ctx context.Context, input string) (*schema.Message, error) {
@@ -46,21 +49,7 @@ func (a *coderAgent) Run(ctx context.Context, input string) (*schema.Message, er
 	if err != nil {
 		return nil, err
 	}
-	// a.history = append(a.history, msg)
-	// toolNode, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
-	// 	Tools: a.tools,
-	// })
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// if len(msg.ToolCalls) > 0 {
-	// 	toolResults, err := toolNode.Invoke(ctx, msg)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	msg = toolResults[0]
-	// }
-	// a.history = append(a.history, msg)
+	a.history = append(a.history, msg)
 	return msg, nil
 }
 
