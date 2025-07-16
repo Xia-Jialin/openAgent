@@ -77,10 +77,9 @@ document.addEventListener("DOMContentLoaded", function() {
 
                 // Render tool calls if they exist
                 if (toolCalls && toolCalls.length > 0) {
-                    const toolCallContent = toolCalls.map(tc => {
-                        const functionCall = tc.function;
-                        return `Tool Call: ${functionCall.name}\nArguments: ${functionCall.arguments}`;
-                    }).join('\n\n');
+                    const toolCallContent = toolCalls
+                        .map(tc => formatToolCall(tc))
+                        .join('\n\n');
                     // Tool calls are always from the assistant
                     addMessage('assistant', toolCallContent, true);
                 }
@@ -117,6 +116,25 @@ document.addEventListener("DOMContentLoaded", function() {
         handleStreamResponse(content);
     }
     
+    // 辅助函数：转义HTML字符
+    function escapeHTML(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    // 辅助函数：格式化工具调用
+    function formatToolCall(toolCall) {
+        let args = toolCall.function.arguments;
+        try {
+            const parsed = JSON.parse(args);
+            args = JSON.stringify(parsed, null, 2);
+        } catch (e) {
+            // 如果不是完整的JSON，就按原样显示
+        }
+        return `Tool Call: ${toolCall.function.name || 'loading...'}\nArguments: ${args || 'loading...'}`;
+    }
+
     async function handleStreamResponse(content) {
         try {
             const response = await fetch('/chat', {
@@ -136,6 +154,8 @@ document.addEventListener("DOMContentLoaded", function() {
             
             let assistantMessageElement = null;
             let buffer = '';
+            let currentToolCalls = []; // 用于累积工具调用片段
+            let toolCallElement = null; // 用于跟踪工具调用的DOM元素
 
             while (true) {
                 const { value, done } = await reader.read();
@@ -188,10 +208,48 @@ document.addEventListener("DOMContentLoaded", function() {
                                 const msg = JSON.parse(msgData);
 
                                 if (msg.tool_calls && msg.tool_calls.length > 0) {
-                                    const toolCallContent = msg.tool_calls.map(tc => 
-                                        `Tool Call: ${tc.function.name}\nArguments: ${tc.function.arguments}`
-                                    ).join('\n');
-                                    addMessage("assistant", toolCallContent, true);
+                                    // 确保有一个助手消息元素
+                                    if (!assistantMessageElement) {
+                                        assistantMessageElement = addMessage("assistant", "");
+                                    }
+
+                                    // 处理工具调用片段
+                                    msg.tool_calls.forEach(part => {
+                                        if (part.index === undefined || part.index === null) return;
+
+                                        // 确保数组有足够的空间
+                                        while (currentToolCalls.length <= part.index) {
+                                            currentToolCalls.push({
+                                                id: '',
+                                                type: '',
+                                                function: { name: '', arguments: '' }
+                                            });
+                                        }
+
+                                        // 合并片段
+                                        const existing = currentToolCalls[part.index];
+                                        if (part.id) existing.id = part.id;
+                                        if (part.type) existing.type = part.type;
+                                        if (part.function) {
+                                            if (part.function.name) existing.function.name = part.function.name;
+                                            if (part.function.arguments) existing.function.arguments += part.function.arguments;
+                                        }
+                                    });
+
+                                    // 获取或创建工具调用元素
+                                    if (!toolCallElement) {
+                                        toolCallElement = document.createElement('div');
+                                        toolCallElement.className = 'tool-call';
+                                        assistantMessageElement.querySelector('.message-content').appendChild(toolCallElement);
+                                    }
+
+                                    // 格式化并显示当前的工具调用状态
+                                    const formattedCalls = currentToolCalls
+                                        .filter(tc => tc.function && (tc.function.name || tc.function.arguments))
+                                        .map(formatToolCall)
+                                        .join('\n\n');
+
+                                    toolCallElement.innerHTML = `<pre>${escapeHTML(formattedCalls)}</pre>`;
                                     continue;
                                 }
 
