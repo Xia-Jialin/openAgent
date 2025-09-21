@@ -311,14 +311,32 @@ func main() {
 		sessionID := c.Param("id")
 
 		mu.Lock()
-		delete(sessions, sessionID)
-		mu.Unlock()
+		agent, exists := sessions[sessionID]
+		if exists {
+			// 获取工作目录路径
+			workDir := agent.GetWorkDir()
+			// 从内存中删除会话
+			delete(sessions, sessionID)
+			mu.Unlock()
+
+			// 删除工作目录
+			if workDir != "" {
+				if err := os.RemoveAll(workDir); err != nil {
+					log.Printf("Failed to remove work directory %s: %v", workDir, err)
+					// 不影响数据库删除，继续执行
+				} else {
+					log.Printf("Successfully removed work directory: %s", workDir)
+				}
+			}
+		} else {
+			mu.Unlock()
+		}
 
 		if err := dbStore.DeleteSession(sessionID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete session"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete session from database"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "session deleted"})
+		c.JSON(http.StatusOK, gin.H{"message": "session deleted successfully"})
 	})
 
 	// 获取数据库统计信息

@@ -148,6 +148,9 @@ document.addEventListener("DOMContentLoaded", function() {
                 <span class="project-meta">最后修改: ${project.lastModified}</span>
                 <div class="project-actions">
                     <button onclick="openProject('${project.id}')">继续编辑 →</button>
+                    <button class="delete-btn" onclick="deleteProject('${project.id}', '${project.name}')" title="删除项目">
+                        🗑️
+                    </button>
                 </div>
             </div>
         `;
@@ -169,6 +172,60 @@ document.addEventListener("DOMContentLoaded", function() {
         loadProjectFiles(projectId);
         loadAiChatHistory(projectId);
         clearAiChat(); // 清空当前聊天历史
+    }
+
+    // 删除项目
+    async function deleteProject(projectId, projectName) {
+        // 显示确认对话框
+        const confirmed = confirm(`确定要删除项目"${projectName}"吗？\n\n此操作将删除项目的所有数据和文件，且无法恢复。`);
+
+        if (!confirmed) {
+            return; // 用户取消删除
+        }
+
+        try {
+            // 显示删除中状态
+            const deleteBtn = document.querySelector(`button[onclick="deleteProject('${projectId}', '${projectName}')"]`);
+            const originalText = deleteBtn.innerHTML;
+            deleteBtn.innerHTML = '🗑️ 删除中...';
+            deleteBtn.disabled = true;
+
+            const response = await fetch(`/sessions/${projectId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.ok) {
+                // 从状态中移除项目
+                state.projects = state.projects.filter(p => p.id !== projectId);
+
+                // 重新渲染项目列表
+                renderProjects();
+
+                // 如果当前正在查看被删除的项目，返回首页
+                if (state.currentProject === projectId) {
+                    state.currentProject = null;
+                    showHomeView();
+                }
+
+                console.log(`项目 "${projectName}" 删除成功`);
+            } else {
+                const errorData = await response.json();
+                throw new Error(errorData.error || `删除失败: ${response.status}`);
+            }
+        } catch (error) {
+            console.error('删除项目失败:', error);
+            alert(`删除项目失败: ${error.message}`);
+
+            // 恢复按钮状态
+            const deleteBtn = document.querySelector(`button[onclick="deleteProject('${projectId}', '${projectName}')"]`);
+            if (deleteBtn) {
+                deleteBtn.innerHTML = '🗑️';
+                deleteBtn.disabled = false;
+            }
+        }
     }
 
     // 显示项目视图
@@ -1287,6 +1344,7 @@ document.addEventListener("DOMContentLoaded", function() {
 
     // 全局函数
     window.openProject = openProject;
+    window.deleteProject = deleteProject;
 
     // 启动应用
     init();
