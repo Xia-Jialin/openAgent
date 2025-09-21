@@ -1,25 +1,139 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>OpenAgent Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenAgent - Frontend Dev Studio</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div id="container">
-        <div id="sidebar">
-            <h2>Sessions</h2>
-            <ul id="session-list"></ul>
+    <!-- 首页视图 -->
+    <div id="home-view" class="view active">
+        <div class="home-header">
+            <h1>🚀 OpenAgent</h1>
+            <p>AI 驱动的前端开发智能体</p>
+            <div class="quick-start">
+                <input type="text" id="project-input" placeholder="描述你的项目，比如：创建一个个人博客网站">
+                <button id="start-project-btn">🚀 开始创建</button>
+            </div>
         </div>
-        <div id="chat-container">
-            <div id="chat-box"></div>
-            <div id="input-container">
-                <input type="text" id="message-input" placeholder="Type your message...">
-                <button id="send-button">Send</button>
-                <button id="new-chat-button">New Chat</button>
+
+        <div class="projects-section">
+            <h2>📂 以往项目</h2>
+            <div id="projects-grid" class="projects-grid">
+                <!-- 项目卡片将动态生成 -->
+            </div>
+            <div class="view-all-projects">
+                <button id="view-all-btn">查看所有项目 →</button>
             </div>
         </div>
     </div>
+
+    <!-- 项目编辑视图 -->
+    <div id="project-view" class="view">
+        <div class="project-header">
+            <div class="project-title">
+                <button id="back-to-home-btn">← 返回首页</button>
+                <span id="current-project-name">项目名称</span>
+            </div>
+            <div class="view-controls">
+                <div class="view-toggle">
+                    <button id="code-view-btn" class="active">💻 代码</button>
+                    <button id="preview-view-btn">👁️ 预览</button>
+                </div>
+                <button id="deploy-btn">🚀 部署</button>
+            </div>
+        </div>
+
+        <div class="project-content">
+            <!-- 左侧边栏 -->
+            <div class="sidebar">
+                <div class="sidebar-tabs">
+                    <button id="files-tab-btn" class="active">📁 文件</button>
+                    <button id="ai-tab-btn">💬 AI助手</button>
+                </div>
+
+                <!-- 文件树视图 -->
+                <div id="files-view" class="sidebar-content active">
+                    <div class="files-header">
+                        <span>📁 项目文件</span>
+                        <button id="new-file-btn">➕ 新建</button>
+                    </div>
+                    <div id="file-tree" class="file-tree">
+                        <!-- 文件树将动态生成 -->
+                    </div>
+                    <div class="file-actions">
+                        <button id="refresh-files-btn">🔄 刷新</button>
+                        <button id="collapse-files-btn">📂 折叠</button>
+                    </div>
+                </div>
+
+                <!-- AI助手视图 -->
+                <div id="ai-view" class="sidebar-content">
+                    <div class="ai-header">
+                        <span>💬 AI助手</span>
+                        <button id="clear-chat-btn">🗑️ 清空</button>
+                    </div>
+                    <div class="ai-content">
+                        <div class="quick-actions">
+                            <div class="quick-actions-title">💡 快速操作</div>
+                            <div class="quick-actions-grid">
+                                <button class="quick-action-btn">创建组件</button>
+                                <button class="quick-action-btn">安装包</button>
+                                <button class="quick-action-btn">优化代码</button>
+                                <button class="quick-action-btn">调试</button>
+                            </div>
+                        </div>
+                        <div id="ai-chat-history" class="ai-chat-history">
+                            <!-- AI对话历史将动态生成 -->
+                        </div>
+                        <div class="ai-input-container">
+                            <input type="text" id="ai-input" placeholder="输入指令，如：创建一个响应式导航栏...">
+                            <button id="ai-send-btn">发送</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 主要区域 -->
+            <div class="main-area">
+                <!-- 代码视图 -->
+                <div id="code-view" class="main-content active">
+                    <div class="code-header">
+                        <div class="file-info">
+                            <span id="current-file-name">📄 文件名</span>
+                            <span class="save-status">● 已保存</span>
+                        </div>
+                        <div class="code-actions">
+                            <button id="format-code-btn">格式化</button>
+                            <button id="save-file-btn">保存</button>
+                        </div>
+                    </div>
+                    <div class="code-editor">
+                        <textarea id="code-editor-content" placeholder="代码将在这里显示..."></textarea>
+                    </div>
+                </div>
+
+                <!-- 预览视图 -->
+                <div id="preview-view" class="main-content">
+                    <div class="preview-header">
+                        <div class="preview-title">📱 实时预览</div>
+                        <div class="preview-controls">
+                            <button class="device-btn active" data-device="desktop">桌面</button>
+                            <button class="device-btn" data-device="tablet">平板</button>
+                            <button class="device-btn" data-device="mobile">手机</button>
+                            <button id="refresh-preview-btn">🔄 刷新</button>
+                            <button id="fullscreen-preview-btn">🔗 全屏</button>
+                        </div>
+                    </div>
+                    <div class="preview-content">
+                        <iframe id="preview-iframe" src="about:blank"></iframe>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/script.js"></script>
 </body>
 </html> 
