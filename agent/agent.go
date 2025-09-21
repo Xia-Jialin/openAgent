@@ -18,6 +18,7 @@ type Agent interface {
 	//流式输出，返回通道，通道中是消息，仅输出，不写入
 	StreamRun(ctx context.Context, input string) (<-chan *schema.Message, error)
 	GetHistory() []*schema.Message
+	GetWorkDir() string
 }
 
 type contextKey string
@@ -297,4 +298,8 @@ func (a *coderAgent) executeToolCalls(ctx context.Context, toolCalls []*schema.T
 
 func (a *coderAgent) GetHistory() []*schema.Message {
 	return a.history
+}
+
+func (a *coderAgent) GetWorkDir() string {
+	return a.workDir
 }

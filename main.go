@@ -40,6 +40,61 @@ You are OpenManus, an all-capable AI assistant, aimed at solving any task presen
 You have a dedicated workspace. When using file-related tools (such as list_files, write_file, read_file, delete_file), all file paths should be relative to your workspace. Do not use absolute paths.
 `
 
+// 文件节点结构
+type FileNode struct {
+	Name     string     `json:"name"`
+	Type     string     `json:"type"`
+	Path     string     `json:"path"`
+	Children []FileNode `json:"children,omitempty"`
+}
+
+// 扫描目录并构建文件树
+func scanDirectory(basePath, currentPath string) ([]FileNode, error) {
+	var files []FileNode
+
+	entries, err := os.ReadDir(currentPath)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range entries {
+		// 跳过隐藏文件和目录
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+
+		fullPath := filepath.Join(currentPath, entry.Name())
+		relPath, err := filepath.Rel(basePath, fullPath)
+		if err != nil {
+			continue
+		}
+
+		if entry.IsDir() {
+			// 递归扫描子目录
+			children, err := scanDirectory(basePath, fullPath)
+			if err != nil {
+				continue
+			}
+
+			files = append(files, FileNode{
+				Name:     entry.Name(),
+				Type:     "folder",
+				Path:     relPath,
+				Children: children,
+			})
+		} else {
+			// 添加文件
+			files = append(files, FileNode{
+				Name: entry.Name(),
+				Type: "file",
+				Path: relPath,
+			})
+		}
+	}
+
+	return files, nil
+}
+
 type MCPConfig struct {
 	McpServers map[string]struct {
 		Command string   `json:"command"`
@@ -274,6 +329,84 @@ func main() {
 			return
 		}
 		c.JSON(http.StatusOK, stats)
+	})
+
+	// 列出文件
+	r.GET("/files/list", func(c *gin.Context) {
+		sessionID := c.Query("session_id")
+		if sessionID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+			return
+		}
+
+		// 获取会话的工作目录
+		mu.Lock()
+		agent, exists := sessions[sessionID]
+		mu.Unlock()
+
+		if !exists {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+
+		// 获取工作目录
+		workDir := agent.GetWorkDir()
+
+		// 扫描目录并构建文件树
+		files, err := scanDirectory(workDir, workDir)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan directory"})
+			return
+		}
+
+		c.JSON(http.StatusOK, files)
+	})
+
+	// 读取文件
+	r.GET("/files/read", func(c *gin.Context) {
+		sessionID := c.Query("session_id")
+		path := c.Query("path")
+
+		if sessionID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+			return
+		}
+		if path == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+			return
+		}
+
+		// 获取会话的工作目录
+		mu.Lock()
+		agent, exists := sessions[sessionID]
+		mu.Unlock()
+
+		if !exists {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+
+		// 构建完整路径
+		workDir := agent.GetWorkDir()
+		fullPath := filepath.Join(workDir, path)
+
+		// 安全检查：确保文件在工作目录内
+		if !strings.HasPrefix(fullPath, workDir) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+			return
+		}
+
+		// 读取文件
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"content": string(content),
+		})
 	})
 
 	// 处理聊天请求

@@ -182,11 +182,11 @@ document.addEventListener("DOMContentLoaded", function() {
     // 加载项目文件
     async function loadProjectFiles(projectId) {
         try {
-            const response = await fetch(`/chat/history?session_id=${projectId}`);
-            const history = await response.json();
+            const response = await fetch(`/files/list?session_id=${projectId}`);
+            const files = await response.json();
 
             // 解析文件结构
-            state.files = parseFileStructure(history);
+            state.files = parseFileStructure(files);
             renderFileTree();
         } catch (error) {
             console.error('Failed to load project files:', error);
@@ -194,29 +194,25 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     // 解析文件结构
-    function parseFileStructure(history) {
-        const files = [];
-        // 这里应该根据历史记录解析文件结构
-        // 现在先返回一个示例结构
-        return [
-            {
-                name: 'src',
-                type: 'folder',
-                children: [
-                    { name: 'App.jsx', type: 'file', content: '// React App Component' },
-                    { name: 'Header.jsx', type: 'file', content: '// Header Component' },
-                    { name: 'index.css', type: 'file', content: '// CSS Styles' }
-                ]
-            },
-            {
-                name: 'public',
-                type: 'folder',
-                children: [
-                    { name: 'index.html', type: 'file', content: '<!DOCTYPE html>' }
-                ]
-            },
-            { name: 'package.json', type: 'file', content: '{\n  "name": "project"\n}' }
-        ];
+    function parseFileStructure(files) {
+        if (!files || !Array.isArray(files)) return [];
+
+        return files.map(file => {
+            if (file.type === 'folder') {
+                return {
+                    name: file.name,
+                    type: 'folder',
+                    children: file.children ? parseFileStructure(file.children) : []
+                };
+            } else {
+                return {
+                    name: file.name,
+                    type: 'file',
+                    path: file.path || file.name,
+                    content: file.content || ''
+                };
+            }
+        });
     }
 
     // 渲染文件树
@@ -261,9 +257,26 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     // 打开文件
-    function openFile(file) {
+    async function openFile(file) {
         state.currentFile = file;
         elements.currentFileName.textContent = `📄 ${file.name}`;
+
+        // 如果文件内容为空，从后端获取
+        if (!file.content && file.path) {
+            try {
+                const response = await fetch(`/files/read?session_id=${state.currentProject}&path=${encodeURIComponent(file.path)}`);
+                const result = await response.json();
+                if (result.success) {
+                    file.content = result.content || '';
+                } else {
+                    file.content = `// Error: ${result.error || 'Failed to load file'}`;
+                }
+            } catch (error) {
+                console.error('Failed to load file content:', error);
+                file.content = `// Error: Failed to load file content`;
+            }
+        }
+
         elements.codeEditorContent.value = file.content || '';
 
         // 更新文件树中的活动状态
