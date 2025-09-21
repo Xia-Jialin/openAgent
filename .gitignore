@@ -2,3 +2,4 @@ manus/
 .env
 vendor/
 workspace/
+openagent.db

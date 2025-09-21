@@ -79,18 +79,37 @@ document.addEventListener("DOMContentLoaded", function() {
         try {
             const response = await fetch('/sessions');
             const sessions = await response.json();
-            state.projects = sessions.map(sessionId => ({
-                id: sessionId,
-                name: sessionId,
+            state.projects = sessions.map(session => ({
+                id: session.id,
+                name: session.title || session.id,
                 icon: '🎨',
-                tech: 'React + Tailwind CSS',
-                description: 'AI生成的项目',
-                lastModified: '刚刚'
+                tech: 'AI Assistant',
+                description: session.title || 'AI对话会话',
+                lastModified: formatDateTime(session.updated_at),
+                createdAt: session.created_at,
+                workDir: session.work_dir
             }));
             renderProjects();
         } catch (error) {
             console.error('Failed to load projects:', error);
         }
+    }
+
+    // 格式化日期时间
+    function formatDateTime(dateString) {
+        const date = new Date(dateString);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+
+        if (diffMins < 1) return '刚刚';
+        if (diffMins < 60) return `${diffMins}分钟前`;
+        if (diffHours < 24) return `${diffHours}小时前`;
+        if (diffDays < 7) return `${diffDays}天前`;
+
+        return date.toLocaleDateString('zh-CN');
     }
 
     // 渲染项目卡片
@@ -138,9 +157,12 @@ document.addEventListener("DOMContentLoaded", function() {
     // 打开项目
     function openProject(projectId) {
         state.currentProject = projectId;
-        elements.currentProjectName.textContent = projectId;
+        const project = state.projects.find(p => p.id === projectId);
+        elements.currentProjectName.textContent = project ? project.name : projectId;
         showProjectView();
         loadProjectFiles(projectId);
+        loadAiChatHistory(projectId);
+        clearAiChat(); // 清空当前聊天历史
     }
 
     // 显示项目视图
@@ -558,7 +580,7 @@ document.addEventListener("DOMContentLoaded", function() {
     // 发送AI消息
     async function sendAiMessage() {
         const message = elements.aiInput.value.trim();
-        if (!message) return;
+        if (!message || !state.currentProject) return;
 
         addAiMessage('user', message);
         elements.aiInput.value = '';
@@ -573,10 +595,15 @@ document.addEventListener("DOMContentLoaded", function() {
                 })
             });
 
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
             // 处理流式响应
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let aiResponse = '';
+            let isFirstMessage = true;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -591,16 +618,34 @@ document.addEventListener("DOMContentLoaded", function() {
                         if (data) {
                             try {
                                 const eventData = JSON.parse(data);
+
+                                // 处理session_id
+                                if (eventData.session_id && isFirstMessage) {
+                                    isFirstMessage = false;
+                                    // 可以在这里更新session状态
+                                }
+
+                                // 处理结束标记
+                                if (eventData.is_end) {
+                                    continue;
+                                }
+
                                 const msgData = eventData.data;
                                 if (msgData) {
                                     const msg = JSON.parse(msgData);
-                                    if (msg.content) {
+
+                                    if (msg.role === 'tool') {
+                                        // 处理工具调用结果
+                                        const toolResult = JSON.parse(msg.content);
+                                        addToolMessage(toolResult);
+                                    } else if (msg.content) {
+                                        // 处理普通消息
                                         aiResponse += msg.content;
                                         updateLastAiMessage(aiResponse);
                                     }
                                 }
                             } catch (e) {
-                                console.error('Error parsing SSE data:', e);
+                                console.error('Error parsing SSE data:', e, 'data:', data);
                             }
                         }
                     }
@@ -610,6 +655,35 @@ document.addEventListener("DOMContentLoaded", function() {
             console.error('Error sending AI message:', error);
             addAiMessage('system', '发送消息时出错，请稍后重试。');
         }
+    }
+
+    // 添加工具消息
+    function addToolMessage(toolResult) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'ai-message tool-message';
+
+        const isSuccess = toolResult.success !== false;
+        const icon = isSuccess ? '🔧' : '❌';
+        const title = isSuccess ? '工具执行结果' : '工具执行失败';
+
+        let content = '';
+        if (isSuccess) {
+            content = toolResult.result || '工具执行成功';
+        } else {
+            content = toolResult.error || '工具执行失败';
+        }
+
+        messageDiv.innerHTML = `
+            <div class="ai-role tool">
+                ${icon} ${title}
+            </div>
+            <div class="tool-content">
+                <pre>${JSON.stringify(content, null, 2)}</pre>
+            </div>
+        `;
+        elements.aiChatHistory.appendChild(messageDiv);
+        elements.aiChatHistory.scrollTop = elements.aiChatHistory.scrollHeight;
+        state.aiChatHistory.push({ role: 'tool', content: JSON.stringify(toolResult) });
     }
 
     // 添加AI消息
@@ -633,6 +707,28 @@ document.addEventListener("DOMContentLoaded", function() {
         if (lastMessage && lastMessage.querySelector('.ai-role.ai')) {
             lastMessage.lastElementChild.textContent = content;
             elements.aiChatHistory.scrollTop = elements.aiChatHistory.scrollHeight;
+        }
+    }
+
+    // 加载AI聊天历史
+    async function loadAiChatHistory(sessionId) {
+        try {
+            const response = await fetch(`/chat/history?session_id=${sessionId}`);
+            const history = await response.json();
+
+            // 清空当前聊天历史
+            clearAiChat();
+
+            // 加载历史消息到界面
+            history.forEach(message => {
+                if (message.role !== 'system') { // 跳过系统消息
+                    addAiMessage(message.role, message.content);
+                }
+            });
+
+            console.log(`Loaded ${history.length} messages for session ${sessionId}`);
+        } catch (error) {
+            console.error('Failed to load AI chat history:', error);
         }
     }
 

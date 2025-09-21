@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -18,6 +19,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"openAgent/agent"
+	"openAgent/storage"
 	mytool "openAgent/tool"
 
 	toolMcp "github.com/cloudwego/eino-ext/components/tool/mcp"
@@ -29,6 +31,7 @@ import (
 var (
 	sessions = make(map[string]agent.Agent)
 	mu       sync.Mutex
+	dbStore  *storage.Storage
 )
 
 const baseSystemPrompt = `
@@ -102,11 +105,76 @@ func runMCPClient(ctx context.Context) []tool.BaseTool {
 	return allTools
 }
 
+// 加载现有会话
+func loadExistingSessions() {
+	storedSessions, err := dbStore.GetAllSessions()
+	if err != nil {
+		log.Printf("Failed to load existing sessions: %v", err)
+		return
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	for _, session := range storedSessions {
+		// 检查工作目录是否存在
+		if _, err := os.Stat(session.WorkDir); os.IsNotExist(err) {
+			log.Printf("Work directory %s does not exist for session %s, recreating...", session.WorkDir, session.ID)
+			if err := os.MkdirAll(session.WorkDir, 0755); err != nil {
+				log.Printf("Failed to recreate work directory for session %s: %v", session.ID, err)
+				continue
+			}
+		}
+
+		// 创建新的ChatModel实例
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		modelName := os.Getenv("OPENAI_MODEL_NAME")
+		baseURL := os.Getenv("OPENAI_BASE_URL")
+
+		var temp float32 = 0.7
+		newCm, err := openai.NewChatModel(context.Background(), &openai.ChatModelConfig{
+			APIKey:      apiKey,
+			BaseURL:     baseURL,
+			Model:       modelName,
+			Temperature: &temp,
+		})
+		if err != nil {
+			log.Printf("Failed to create ChatModel for session %s: %v", session.ID, err)
+			continue
+		}
+
+		// 加载工具
+		allTools := runMCPClient(context.Background())
+		deleteFileTool, _ := mytool.NewDeleteFileTool()
+		listFilesTool, _ := mytool.NewListFilesTool()
+		writeFileTool, _ := mytool.NewWriteFileTool()
+		readFileTool, _ := mytool.NewReadFileTool()
+		allTools = append(allTools, deleteFileTool, listFilesTool, writeFileTool, readFileTool)
+
+		// 创建带持久化的Agent
+		currentAgent := agent.NewCoderAgentWithStorage(context.Background(), newCm, allTools, session.SystemPrompt, session.WorkDir, dbStore, session.ID)
+		sessions[session.ID] = currentAgent
+
+		log.Printf("Loaded session %s from database", session.ID)
+	}
+}
+
 func main() {
 	ctx := context.Background()
 
 	// 加载.env文件
 	_ = godotenv.Load()
+
+	// 初始化数据库存储
+	var err error
+	dbStore, err = storage.NewStorage("data/openagent.db")
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer dbStore.Close()
+
+	// 加载现有会话
+	loadExistingSessions()
 
 	// --- 初始化 Agent ---
 	allTools := runMCPClient(ctx)
@@ -147,13 +215,12 @@ func main() {
 
 	// 获取所有会话
 	r.GET("/sessions", func(c *gin.Context) {
-		mu.Lock()
-		defer mu.Unlock()
-		sessionIDs := make([]string, 0, len(sessions))
-		for id := range sessions {
-			sessionIDs = append(sessionIDs, id)
+		storedSessions, err := dbStore.GetAllSessions()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get sessions"})
+			return
 		}
-		c.JSON(http.StatusOK, sessionIDs)
+		c.JSON(http.StatusOK, storedSessions)
 	})
 
 	// 获取会话历史
@@ -163,15 +230,50 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
 			return
 		}
-		mu.Lock()
-		defer mu.Unlock()
-		currentAgent, ok := sessions[sessionID]
-		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		history := dbStore.GetHistory(sessionID)
+		c.JSON(http.StatusOK, history)
+	})
+
+	// 更新会话标题
+	r.PUT("/sessions/:id/title", func(c *gin.Context) {
+		sessionID := c.Param("id")
+		var req struct {
+			Title string `json:"title"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 			return
 		}
-		history := currentAgent.GetHistory()
-		c.JSON(http.StatusOK, history)
+		if err := dbStore.UpdateSession(sessionID, req.Title); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update session"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "session updated"})
+	})
+
+	// 删除会话
+	r.DELETE("/sessions/:id", func(c *gin.Context) {
+		sessionID := c.Param("id")
+
+		mu.Lock()
+		delete(sessions, sessionID)
+		mu.Unlock()
+
+		if err := dbStore.DeleteSession(sessionID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete session"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "session deleted"})
+	})
+
+	// 获取数据库统计信息
+	r.GET("/stats", func(c *gin.Context) {
+		stats, err := dbStore.GetDBStats()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get stats"})
+			return
+		}
+		c.JSON(http.StatusOK, stats)
 	})
 
 	// 处理聊天请求
@@ -218,7 +320,24 @@ func main() {
 			// sessionTools := make([]tool.BaseTool, len(allTools))
 			// copy(sessionTools, allTools)
 
-			currentAgent = agent.NewCoderAgent(ctx, newCm, allTools, baseSystemPrompt, workDir)
+			// 创建会话标题（使用用户输入的前20个字符）
+			title := userInput.Content
+			if len(title) > 20 {
+				title = title[:20] + "..."
+			}
+			if strings.TrimSpace(title) == "" {
+				title = "New Chat"
+			}
+
+			// 保存会话到数据库
+			if err := dbStore.CreateSession(userInput.SessionID, workDir, baseSystemPrompt, title); err != nil {
+				log.Printf("Failed to save session to database: %v", err)
+				mu.Unlock()
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create session"})
+				return
+			}
+
+			currentAgent = agent.NewCoderAgentWithStorage(ctx, newCm, allTools, baseSystemPrompt, workDir, dbStore, userInput.SessionID)
 			sessions[userInput.SessionID] = currentAgent
 		}
 		mu.Unlock()

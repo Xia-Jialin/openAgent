@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"openAgent/storage"
 )
 
 type Agent interface {
@@ -23,14 +25,21 @@ type contextKey string
 const WorkDirKey contextKey = "workDir"
 
 type coderAgent struct {
-	model   model.ChatModel
-	tools   []tool.BaseTool
-	history []*schema.Message
-	workDir string
-	toolMap map[string]tool.InvokableTool
+	model      model.ChatModel
+	tools      []tool.BaseTool
+	history    []*schema.Message
+	workDir    string
+	toolMap    map[string]tool.InvokableTool
+	dbStore    *storage.Storage
+	sessionID  string
+	mu         sync.Mutex
 }
 
 func NewCoderAgent(ctx context.Context, model model.ChatModel, tools []tool.BaseTool, systemPrompt string, workDir string) *coderAgent {
+	return NewCoderAgentWithStorage(ctx, model, tools, systemPrompt, workDir, nil, "")
+}
+
+func NewCoderAgentWithStorage(ctx context.Context, model model.ChatModel, tools []tool.BaseTool, systemPrompt string, workDir string, dbStore *storage.Storage, sessionID string) *coderAgent {
 	toolsInfo := make([]*schema.ToolInfo, len(tools))
 	toolMap := make(map[string]tool.InvokableTool)
 	for i, t := range tools {
@@ -44,20 +53,51 @@ func NewCoderAgent(ctx context.Context, model model.ChatModel, tools []tool.Base
 		}
 	}
 	model.BindTools(toolsInfo)
+
+	var history []*schema.Message
 	systemMessage := &schema.Message{
 		Role:    schema.System,
 		Content: systemPrompt,
 	}
-	return &coderAgent{model: model, tools: tools, history: []*schema.Message{systemMessage}, workDir: workDir, toolMap: toolMap}
+	history = append(history, systemMessage)
+
+	// 如果有数据库存储，加载历史消息
+	if dbStore != nil && sessionID != "" {
+		loadedMessages := dbStore.GetHistory(sessionID)
+		if len(loadedMessages) > 0 {
+			history = loadedMessages
+		}
+	}
+
+	return &coderAgent{
+		model:     model,
+		tools:     tools,
+		history:   history,
+		workDir:   workDir,
+		toolMap:   toolMap,
+		dbStore:   dbStore,
+		sessionID: sessionID,
+	}
 }
 
 func (a *coderAgent) Run(ctx context.Context, input string) (*schema.Message, error) {
 	log.Println("Run", input)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	msg := &schema.Message{
 		Role:    schema.User,
 		Content: input,
 	}
 	a.history = append(a.history, msg)
+
+	// 保存用户消息到数据库
+	if a.dbStore != nil && a.sessionID != "" {
+		if err := a.dbStore.SaveMessage(a.sessionID, msg); err != nil {
+			log.Printf("Failed to save user message: %v", err)
+		}
+	}
+
 	ctxWithWorkDir := context.WithValue(ctx, WorkDirKey, a.workDir)
 
 	for {
@@ -66,6 +106,13 @@ func (a *coderAgent) Run(ctx context.Context, input string) (*schema.Message, er
 			return nil, err
 		}
 		a.history = append(a.history, msg)
+
+		// 保存助手消息到数据库
+		if a.dbStore != nil && a.sessionID != "" {
+			if err := a.dbStore.SaveMessage(a.sessionID, msg); err != nil {
+				log.Printf("Failed to save assistant message: %v", err)
+			}
+		}
 
 		if len(msg.ToolCalls) == 0 {
 			return msg, nil
@@ -77,15 +124,34 @@ func (a *coderAgent) Run(ctx context.Context, input string) (*schema.Message, er
 
 		toolResults := a.executeToolCalls(ctxWithWorkDir, toolCalls)
 		a.history = append(a.history, toolResults...)
+
+		// 保存工具结果到数据库
+		if a.dbStore != nil && a.sessionID != "" {
+			for _, toolResult := range toolResults {
+				if err := a.dbStore.SaveMessage(a.sessionID, toolResult); err != nil {
+					log.Printf("Failed to save tool result: %v", err)
+				}
+			}
+		}
 	}
 }
 
 func (a *coderAgent) StreamRun(ctx context.Context, input string) (<-chan *schema.Message, error) {
+	a.mu.Lock()
 	msg := &schema.Message{
 		Role:    schema.User,
 		Content: input,
 	}
 	a.history = append(a.history, msg)
+
+	// 保存用户消息到数据库
+	if a.dbStore != nil && a.sessionID != "" {
+		if err := a.dbStore.SaveMessage(a.sessionID, msg); err != nil {
+			log.Printf("Failed to save user message: %v", err)
+		}
+	}
+	a.mu.Unlock()
+
 	ch := make(chan *schema.Message)
 	ctxWithWorkDir := context.WithValue(ctx, WorkDirKey, a.workDir)
 
@@ -104,8 +170,18 @@ func (a *coderAgent) StreamRun(ctx context.Context, input string) (<-chan *schem
 				msgPart, err := stream.Recv()
 				if err != nil { // Stream ended
 					if assistantMessage != nil {
+						a.mu.Lock()
 						a.history = append(a.history, assistantMessage)
+
+						// 保存助手消息到数据库
+						if a.dbStore != nil && a.sessionID != "" {
+							if err := a.dbStore.SaveMessage(a.sessionID, assistantMessage); err != nil {
+								log.Printf("Failed to save assistant message: %v", err)
+							}
+						}
+
 						hasToolCall = len(assistantMessage.ToolCalls) > 0
+						a.mu.Unlock()
 					}
 					break // Exit inner loop to process tool calls
 				}
@@ -153,7 +229,19 @@ func (a *coderAgent) StreamRun(ctx context.Context, input string) (<-chan *schem
 			}
 
 			toolResults := a.executeToolCalls(ctxWithWorkDir, toolCalls)
+
+			a.mu.Lock()
 			a.history = append(a.history, toolResults...)
+
+			// 保存工具结果到数据库
+			if a.dbStore != nil && a.sessionID != "" {
+				for _, toolResult := range toolResults {
+					if err := a.dbStore.SaveMessage(a.sessionID, toolResult); err != nil {
+						log.Printf("Failed to save tool result: %v", err)
+					}
+				}
+			}
+			a.mu.Unlock()
 
 			// Send tool results to frontend
 			fmt.Printf("Sending %d tool results to frontend\n", len(toolResults))
