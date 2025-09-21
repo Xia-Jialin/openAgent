@@ -68,6 +68,9 @@ document.addEventListener("DOMContentLoaded", function() {
         files: [],
         aiChatHistory: [],
         isSending: false,
+        isCreatingProject: false,
+        creatingAiResponse: false,
+        currentAiResponse: '',
         currentController: null
     };
 
@@ -573,7 +576,9 @@ document.addEventListener("DOMContentLoaded", function() {
                                 if (data) {
                                     try {
                                         const eventData = JSON.parse(data);
-                                        if (eventData.session_id) {
+
+                                        // 处理session_id
+                                        if (eventData.session_id && !state.currentProject) {
                                             const newProject = {
                                                 id: eventData.session_id,
                                                 name: `项目-${eventData.session_id.substring(0, 8)}`,
@@ -586,7 +591,53 @@ document.addEventListener("DOMContentLoaded", function() {
                                             renderProjects();
                                             openProject(eventData.session_id);
                                             elements.projectInput.value = '';
+
+                                            // 在新项目中添加用户消息
+                                            addAiMessage('user', description);
+                                        }
+
+                                        // 处理AI回复内容
+                                        const msgData = eventData.data;
+                                        if (msgData) {
+                                            try {
+                                                const msg = JSON.parse(msgData);
+
+                                                if (msg.role === 'tool') {
+                                                    // 处理工具调用结果
+                                                    try {
+                                                        const toolResult = JSON.parse(msg.content);
+                                                        addToolMessage(toolResult);
+                                                    } catch (toolError) {
+                                                        console.error('Error parsing tool result:', toolError);
+                                                        addToolMessage({
+                                                            success: false,
+                                                            error: '工具结果解析失败'
+                                                        });
+                                                    }
+                                                } else if (msg.content) {
+                                                    // 处理普通AI回复 - 实现打字机效果
+                                                    // 如果是第一条消息内容，先创建空的AI消息
+                                                    if (!state.creatingAiResponse) {
+                                                        addAiMessage('assistant', '');
+                                                        state.creatingAiResponse = true;
+                                                        state.currentAiResponse = '';
+                                                    }
+
+                                                    // 累加内容并更新显示
+                                                    state.currentAiResponse += msg.content;
+                                                    updateLastAiMessage(state.currentAiResponse);
+                                                }
+                                            } catch (msgError) {
+                                                console.error('Error parsing message data:', msgError);
+                                            }
+                                        }
+
+                                        // 处理结束标记
+                                        if (eventData.is_end) {
                                             clearTimeout(sseTimeout);
+                                            state.isCreatingProject = false;
+                                            state.creatingAiResponse = false;
+                                            state.currentAiResponse = '';
                                             return; // 成功创建，退出函数
                                         }
                                     } catch (e) {
@@ -617,6 +668,8 @@ document.addEventListener("DOMContentLoaded", function() {
             }
         } finally {
             state.isCreatingProject = false;
+            state.creatingAiResponse = false;
+            state.currentAiResponse = '';
         }
     }
 
