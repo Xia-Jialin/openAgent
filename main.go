@@ -268,8 +268,8 @@ func main() {
 		})
 	})
 
-	fmt.Println("服务已启动，请访问 http://localhost:8080")
-	if err := r.Run(":8080"); err != nil {
+	fmt.Println("服务已启动，请访问 http://localhost:8081")
+	if err := r.Run(":8081"); err != nil {
 		log.Fatalf("启动Gin服务失败: %v", err)
 	}
 }

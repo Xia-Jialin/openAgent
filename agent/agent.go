@@ -154,6 +154,18 @@ func (a *coderAgent) StreamRun(ctx context.Context, input string) (<-chan *schem
 
 			toolResults := a.executeToolCalls(ctxWithWorkDir, toolCalls)
 			a.history = append(a.history, toolResults...)
+
+			// Send tool results to frontend
+			fmt.Printf("Sending %d tool results to frontend\n", len(toolResults))
+			for _, toolResult := range toolResults {
+				// Safe string truncation for debugging
+				contentPreview := toolResult.Content
+				if len(contentPreview) > 100 {
+					contentPreview = contentPreview[:100] + "..."
+				}
+				fmt.Printf("Sending tool result: role=%s, content=%s\n", toolResult.Role, contentPreview)
+				ch <- toolResult
+			}
 			// The loop will continue and call the model again with tool results
 		}
 	}()
