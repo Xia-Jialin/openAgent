@@ -99,7 +99,7 @@ document.addEventListener("DOMContentLoaded", function() {
 
                 // Render tool calls if they exist
                 if (toolCalls && toolCalls.length > 0) {
-                    const assistantMessage = chatBox.querySelector('.message.assistant:last-child');
+                    let assistantMessage = chatBox.querySelector('.message.assistant:last-child');
                     if (!assistantMessage) {
                         const newAssistantMessage = addMessage('assistant', '');
                         assistantMessage = newAssistantMessage;
