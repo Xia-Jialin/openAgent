@@ -223,7 +223,43 @@ func (s *Storage) GetHistory(sessionID string) []*schema.Message {
 		return nil
 	}
 
-	return messages
+	// Validate and fix tool call relationships
+	return s.validateToolCallRelationships(messages)
+}
+
+// validateToolCallRelationships ensures that tool messages are properly preceded by assistant messages with tool calls
+func (s *Storage) validateToolCallRelationships(messages []*schema.Message) []*schema.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	var validMessages []*schema.Message
+	toolCallIDs := make(map[string]bool)
+
+	// First pass: collect all tool call IDs from assistant messages
+	for _, msg := range messages {
+		if msg.Role == schema.Assistant && len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				toolCallIDs[tc.ID] = true
+			}
+		}
+	}
+
+	// Second pass: validate tool messages and build clean message list
+	for _, msg := range messages {
+		if msg.Role == schema.Tool {
+			// Only include tool messages that have a valid tool call ID
+			if msg.ToolCallID != "" && toolCallIDs[msg.ToolCallID] {
+				validMessages = append(validMessages, msg)
+			} else {
+				log.Printf("Warning: Tool message with invalid tool_call_id '%s' will be dropped", msg.ToolCallID)
+			}
+		} else {
+			validMessages = append(validMessages, msg)
+		}
+	}
+
+	return validMessages
 }
 
 func (s *Storage) ClearMessages(sessionID string) error {

@@ -38,6 +38,7 @@ document.addEventListener("DOMContentLoaded", function() {
         aiChatHistory: document.getElementById("ai-chat-history"),
         aiInput: document.getElementById("ai-input"),
         aiSendBtn: document.getElementById("ai-send-btn"),
+        aiCancelBtn: document.getElementById("ai-cancel-btn"),
 
         // 代码编辑器
         currentFileName: document.getElementById("current-file-name"),
@@ -65,7 +66,9 @@ document.addEventListener("DOMContentLoaded", function() {
         currentFile: null,
         projects: [],
         files: [],
-        aiChatHistory: []
+        aiChatHistory: [],
+        isSending: false,
+        currentController: null
     };
 
     // 初始化应用
@@ -308,9 +311,15 @@ document.addEventListener("DOMContentLoaded", function() {
         // AI助手事件
         elements.aiSendBtn.addEventListener('click', sendAiMessage);
         elements.aiInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendAiMessage();
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendAiMessage();
+            }
         });
         elements.clearChatBtn.addEventListener('click', clearAiChat);
+        if (elements.aiCancelBtn) {
+            elements.aiCancelBtn.addEventListener('click', cancelCurrentRequest);
+        }
 
         // 文件操作事件
         elements.newFileBtn.addEventListener('click', createNewFile);
@@ -506,56 +515,108 @@ document.addEventListener("DOMContentLoaded", function() {
         const description = elements.projectInput.value.trim();
         if (!description) return;
 
+        // 防止重复创建
+        if (state.isCreatingProject) {
+            console.log('项目创建中，请稍候...');
+            return;
+        }
+
+        state.isCreatingProject = true;
+        const controller = new AbortController();
+
+        // 设置超时
+        const timeout = setTimeout(() => {
+            controller.abort();
+            alert('创建项目超时，请重试。');
+            state.isCreatingProject = false;
+        }, 30000); // 30秒超时
+
         try {
             // 创建新会话
             const response = await fetch('/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: description })
+                body: JSON.stringify({ content: description }),
+                signal: controller.signal
             });
+
+            clearTimeout(timeout);
 
             if (response.ok) {
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
+                // 设置SSE读取超时
+                const sseTimeout = setTimeout(() => {
+                    reader.cancel();
+                    alert('读取响应超时，请重试。');
+                    state.isCreatingProject = false;
+                }, 60000);
 
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
+                try {
+                    while (true) {
+                        const { done, value } = await Promise.race([
+                            reader.read(),
+                            new Promise((_, reject) =>
+                                setTimeout(() => reject(new Error('Read timeout')), 5000)
+                            )
+                        ]);
 
-                    for (const line of lines) {
-                        if (line.startsWith('data:')) {
-                            const data = line.substring(5).trim();
-                            if (data) {
-                                try {
-                                    const eventData = JSON.parse(data);
-                                    if (eventData.session_id) {
-                                        const newProject = {
-                                            id: eventData.session_id,
-                                            name: `项目-${eventData.session_id.substring(0, 8)}`,
-                                            icon: '🚀',
-                                            tech: 'React + Tailwind CSS',
-                                            description: description,
-                                            lastModified: '刚刚'
-                                        };
-                                        state.projects.unshift(newProject);
-                                        renderProjects();
-                                        openProject(eventData.session_id);
-                                        elements.projectInput.value = '';
-                                        break;
+                        if (done) break;
+
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+
+                        for (const line of lines) {
+                            if (line.startsWith('data:')) {
+                                const data = line.substring(5).trim();
+                                if (data) {
+                                    try {
+                                        const eventData = JSON.parse(data);
+                                        if (eventData.session_id) {
+                                            const newProject = {
+                                                id: eventData.session_id,
+                                                name: `项目-${eventData.session_id.substring(0, 8)}`,
+                                                icon: '🚀',
+                                                tech: 'React + Tailwind CSS',
+                                                description: description,
+                                                lastModified: '刚刚'
+                                            };
+                                            state.projects.unshift(newProject);
+                                            renderProjects();
+                                            openProject(eventData.session_id);
+                                            elements.projectInput.value = '';
+                                            clearTimeout(sseTimeout);
+                                            return; // 成功创建，退出函数
+                                        }
+                                    } catch (e) {
+                                        console.error('Error parsing SSE data:', e);
                                     }
-                                } catch (e) {
-                                    console.error('Error parsing SSE data:', e);
                                 }
                             }
                         }
                     }
+                } catch (readError) {
+                    console.error('SSE读取错误:', readError);
+                    if (readError.message !== 'Read timeout') {
+                        alert('创建项目时读取响应失败，请重试。');
+                    }
+                } finally {
+                    clearTimeout(sseTimeout);
                 }
+            } else {
+                alert(`创建项目失败: ${response.status}`);
             }
         } catch (error) {
-            console.error('Error creating project:', error);
+            clearTimeout(timeout);
+            if (error.name === 'AbortError') {
+                console.log('项目创建被取消');
+            } else {
+                console.error('Error creating project:', error);
+                alert('创建项目失败，请稍后重试。');
+            }
+        } finally {
+            state.isCreatingProject = false;
         }
     }
 
@@ -590,13 +651,100 @@ document.addEventListener("DOMContentLoaded", function() {
         }
     }
 
+    // 防抖函数
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+
+    // 防抖的DOM更新函数
+    let updateTimeout;
+    function debouncedUpdateAIResponse(content) {
+        clearTimeout(updateTimeout);
+        updateTimeout = setTimeout(() => {
+            updateLastAiMessage(content);
+        }, 100); // 100ms防抖
+    }
+
+    // 防抖的AI聊天布局优化
+    let layoutOptimizeTimeout;
+    function debouncedOptimizeAiChatLayout() {
+        clearTimeout(layoutOptimizeTimeout);
+        layoutOptimizeTimeout = setTimeout(() => {
+            optimizeAiChatLayout();
+        }, 100); // 100ms防抖
+    }
+
+    // 取消当前请求
+    function cancelCurrentRequest() {
+        if (state.currentController) {
+            state.currentController.abort();
+            state.currentController = null;
+        }
+        state.isSending = false;
+        updateSendButtonState();
+        addAiMessage('system', '请求已取消。');
+    }
+
+    // 更新发送按钮状态
+    function updateSendButtonState() {
+        if (elements.aiSendBtn) {
+            elements.aiSendBtn.disabled = state.isSending;
+            elements.aiSendBtn.textContent = state.isSending ? '发送中...' : '发送';
+        }
+        if (elements.aiCancelBtn) {
+            elements.aiCancelBtn.style.display = state.isSending ? 'inline-block' : 'none';
+        }
+        if (elements.aiInput) {
+            elements.aiInput.disabled = state.isSending;
+        }
+    }
+
     // 发送AI消息
     async function sendAiMessage() {
         const message = elements.aiInput.value.trim();
         if (!message || !state.currentProject) return;
 
+        // 检查是否有正在进行的请求
+        if (state.isSending) {
+            console.log('已有请求正在进行，请等待完成');
+            // 可选：取消当前请求
+            // cancelCurrentRequest();
+            return;
+        }
+
+        console.log('Sending AI message:', message);
+        console.log('Input container before send:', elements.aiInput.parentElement);
+
+        state.isSending = true;
+        state.currentController = new AbortController();
+        updateSendButtonState();
+
         addAiMessage('user', message);
         elements.aiInput.value = '';
+
+        // 确保输入框保持可见
+        setTimeout(() => {
+            const aiInputContainer = document.querySelector('.ai-input-container');
+            if (aiInputContainer) {
+                aiInputContainer.style.display = 'flex';
+                aiInputContainer.style.visibility = 'visible';
+                console.log('Input container after send:', aiInputContainer.style.display);
+            }
+        }, 100);
+
+        // 设置请求超时
+        const requestTimeout = setTimeout(() => {
+            cancelCurrentRequest();
+            addAiMessage('system', '请求超时，请稍后重试。');
+        }, 30000); // 30秒超时
 
         try {
             const response = await fetch('/chat', {
@@ -605,8 +753,11 @@ document.addEventListener("DOMContentLoaded", function() {
                 body: JSON.stringify({
                     content: message,
                     session_id: state.currentProject
-                })
+                }),
+                signal: state.currentController.signal
             });
+
+            clearTimeout(requestTimeout);
 
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
@@ -618,55 +769,116 @@ document.addEventListener("DOMContentLoaded", function() {
             let aiResponse = '';
             let isFirstMessage = true;
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+            // 设置SSE读取超时
+            const sseTimeout = setTimeout(() => {
+                console.error('SSE读取超时');
+                reader.cancel();
+                addAiMessage('system', '响应读取超时，请重试。');
+            }, 60000); // 60秒超时
 
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n');
+            try {
+                while (true) {
+                    const { done, value } = await Promise.race([
+                        reader.read(),
+                        new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('Read timeout')), 5000)
+                        )
+                    ]);
 
-                for (const line of lines) {
-                    if (line.startsWith('data:')) {
-                        const data = line.substring(5).trim();
-                        if (data) {
-                            try {
-                                const eventData = JSON.parse(data);
+                    if (done) break;
 
-                                // 处理session_id
-                                if (eventData.session_id && isFirstMessage) {
-                                    isFirstMessage = false;
-                                    // 可以在这里更新session状态
-                                }
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
 
-                                // 处理结束标记
-                                if (eventData.is_end) {
-                                    continue;
-                                }
+                    for (const line of lines) {
+                        if (line.startsWith('data:')) {
+                            const data = line.substring(5).trim();
+                            if (data) {
+                                try {
+                                    const eventData = JSON.parse(data);
 
-                                const msgData = eventData.data;
-                                if (msgData) {
-                                    const msg = JSON.parse(msgData);
-
-                                    if (msg.role === 'tool') {
-                                        // 处理工具调用结果
-                                        const toolResult = JSON.parse(msg.content);
-                                        addToolMessage(toolResult);
-                                    } else if (msg.content) {
-                                        // 处理普通消息
-                                        aiResponse += msg.content;
-                                        updateLastAiMessage(aiResponse);
+                                    // 处理session_id
+                                    if (eventData.session_id && isFirstMessage) {
+                                        isFirstMessage = false;
+                                        // 可以在这里更新session状态
                                     }
+
+                                    // 处理结束标记
+                                    if (eventData.is_end) {
+                                        clearTimeout(sseTimeout);
+                                        // 确保在成功完成后重置发送状态
+                                        state.isSending = false;
+                                        state.currentController = null;
+                                        updateSendButtonState();
+                                        continue;
+                                    }
+
+                                    const msgData = eventData.data;
+                                    if (msgData) {
+                                        const msg = JSON.parse(msgData);
+
+                                        if (msg.role === 'tool') {
+                                            // 处理工具调用结果
+                                            try {
+                                                const toolResult = JSON.parse(msg.content);
+                                                addToolMessage(toolResult);
+                                            } catch (toolError) {
+                                                console.error('Error parsing tool result:', toolError);
+                                                addToolMessage({
+                                                    success: false,
+                                                    error: '工具结果解析失败'
+                                                });
+                                            }
+                                        } else if (msg.content) {
+                                            // 处理普通消息 - 使用防抖优化
+                                            // 如果是第一条消息内容，先创建空的AI消息
+                                            if (aiResponse === '') {
+                                                addAiMessage('assistant', '');
+                                            }
+
+                                            aiResponse += msg.content;
+                                            debouncedUpdateAIResponse(aiResponse);
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.error('Error parsing SSE data:', e, 'data:', data);
+                                    // 不要因为解析错误而中断流程
                                 }
-                            } catch (e) {
-                                console.error('Error parsing SSE data:', e, 'data:', data);
                             }
                         }
                     }
                 }
+
+                // 确保在正常完成后重置发送状态
+                state.isSending = false;
+                state.currentController = null;
+                updateSendButtonState();
+            } catch (readError) {
+                console.error('SSE读取错误:', readError);
+                if (readError.message === 'Read timeout') {
+                    addAiMessage('system', '读取响应超时，请重试。');
+                } else {
+                    addAiMessage('system', '读取响应时出错，请重试。');
+                }
+            } finally {
+                clearTimeout(sseTimeout);
+                // 确保在成功完成后重置发送状态
+                state.isSending = false;
+                state.currentController = null;
+                updateSendButtonState();
             }
         } catch (error) {
-            console.error('Error sending AI message:', error);
-            addAiMessage('system', '发送消息时出错，请稍后重试。');
+            clearTimeout(requestTimeout);
+            if (error.name === 'AbortError') {
+                console.log('请求被取消');
+                addAiMessage('system', '请求已取消。');
+            } else {
+                console.error('Error sending AI message:', error);
+                addAiMessage('system', '发送消息时出错，请稍后重试。');
+            }
+        } finally {
+            state.isSending = false;
+            state.currentController = null;
         }
     }
 
@@ -715,7 +927,7 @@ document.addEventListener("DOMContentLoaded", function() {
 
         // 优化AI聊天布局
         setTimeout(() => {
-            optimizeAiChatLayout();
+            debouncedOptimizeAiChatLayout();
         }, 50);
     }
 
@@ -728,7 +940,7 @@ document.addEventListener("DOMContentLoaded", function() {
 
             // 优化AI聊天布局
             setTimeout(() => {
-                optimizeAiChatLayout();
+                debouncedOptimizeAiChatLayout();
             }, 50);
         }
     }
@@ -898,7 +1110,7 @@ document.addEventListener("DOMContentLoaded", function() {
                             setTimeout(() => {
                                 adjustEditorHeight();
                                 adjustSidebarHeight();
-                                optimizeAiChatLayout();
+                                debouncedOptimizeAiChatLayout();
                             }, 100);
                         }
                     }
@@ -921,7 +1133,7 @@ document.addEventListener("DOMContentLoaded", function() {
                             if (isActive) {
                                 setTimeout(() => {
                                     adjustEditorHeight();
-                                    optimizeAiChatLayout();
+                                    debouncedOptimizeAiChatLayout();
                                 }, 50);
                             }
                         }
@@ -932,11 +1144,11 @@ document.addEventListener("DOMContentLoaded", function() {
             }
         });
 
-        // 监听AI聊天历史变化
+        // 监听AI聊天历史变化 - 使用防抖避免频繁调用
         const aiChatHistory = document.getElementById('ai-chat-history');
         if (aiChatHistory) {
             const observer = new MutationObserver((mutations) => {
-                optimizeAiChatLayout();
+                debouncedOptimizeAiChatLayout();
             });
 
             observer.observe(aiChatHistory, {
@@ -962,16 +1174,25 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     // 优化AI聊天布局，确保输入框始终可见
+    let lastLayoutHeight = 0;
     function optimizeAiChatLayout() {
         const aiContent = document.querySelector('.ai-content');
         const aiChatHistory = document.querySelector('.ai-chat-history');
         const aiInputContainer = document.querySelector('.ai-input-container');
 
-        if (!aiContent || !aiChatHistory || !aiInputContainer) return;
+        if (!aiContent || !aiChatHistory || !aiInputContainer) {
+            return;
+        }
 
         // 计算可用空间
         const contentRect = aiContent.getBoundingClientRect();
         const availableHeight = contentRect.height;
+
+        // 如果高度没有变化，不需要重新计算布局
+        if (Math.abs(availableHeight - lastLayoutHeight) < 2) {
+            return;
+        }
+        lastLayoutHeight = availableHeight;
 
         // 计算固定元素的高度
         const quickActions = aiContent.querySelector('.quick-actions');
@@ -981,20 +1202,34 @@ document.addEventListener("DOMContentLoaded", function() {
         // 计算聊天历史可用的最大高度
         const maxChatHistoryHeight = availableHeight - quickActionsHeight - inputContainerHeight - 24; // padding
 
-        // 动态调整聊天历史高度
+        // 动态调整聊天历史高度，确保不会太小
         if (maxChatHistoryHeight > 100) {
-            aiChatHistory.style.maxHeight = `${maxChatHistoryHeight}px`;
-            aiChatHistory.style.height = `${Math.min(maxChatHistoryHeight, window.innerHeight * 0.4)}px`;
+            const newHeight = Math.min(maxChatHistoryHeight, window.innerHeight * 0.4);
+            const currentHeight = parseInt(aiChatHistory.style.height) || 0;
+
+            // 只在高度变化超过5px时才更新样式，避免不必要的重排
+            if (Math.abs(newHeight - currentHeight) > 5) {
+                aiChatHistory.style.maxHeight = `${maxChatHistoryHeight}px`;
+                aiChatHistory.style.height = `${newHeight}px`;
+            }
+        } else {
+            // 如果高度太小，设置一个最小高度
+            aiChatHistory.style.maxHeight = '200px';
+            aiChatHistory.style.height = '150px';
         }
 
         // 确保输入框可见
         aiInputContainer.style.position = 'relative';
         aiInputContainer.style.zIndex = '10';
+        aiInputContainer.style.display = 'flex';
+        aiInputContainer.style.visibility = 'visible';
 
-        // 自动滚动到最新消息
-        setTimeout(() => {
-            aiChatHistory.scrollTop = aiChatHistory.scrollHeight;
-        }, 50);
+        // 自动滚动到最新消息 - 只在聊天历史有内容时
+        if (aiChatHistory.children.length > 0) {
+            requestAnimationFrame(() => {
+                aiChatHistory.scrollTop = aiChatHistory.scrollHeight;
+            });
+        }
     }
 
     // 全局函数

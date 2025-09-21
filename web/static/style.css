@@ -550,6 +550,32 @@ body {
     font-size: 9px;
     font-weight: bold;
     cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.ai-input-container button:hover {
+    background: #0056b3;
+}
+
+.ai-input-container button:disabled {
+    background: #666;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.ai-input-container #ai-cancel-btn {
+    background: #dc3545;
+}
+
+.ai-input-container #ai-cancel-btn:hover {
+    background: #c82333;
+}
+
+/* 确保AI输入框容器始终可见 */
+.ai-input-container {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
 }
 
 /* Main Area Styles */

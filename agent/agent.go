@@ -102,6 +102,11 @@ func (a *coderAgent) Run(ctx context.Context, input string) (*schema.Message, er
 	ctxWithWorkDir := context.WithValue(ctx, WorkDirKey, a.workDir)
 
 	for {
+		// Validate message history before sending to API
+		if err := a.validateMessageHistory(); err != nil {
+			return nil, fmt.Errorf("message validation failed: %w", err)
+		}
+
 		msg, err := a.model.Generate(ctxWithWorkDir, a.history)
 		if err != nil {
 			return nil, err
@@ -159,6 +164,15 @@ func (a *coderAgent) StreamRun(ctx context.Context, input string) (<-chan *schem
 	go func() {
 		defer close(ch)
 		for {
+			// Validate message history before sending to API
+			a.mu.Lock()
+			if err := a.validateMessageHistory(); err != nil {
+				log.Printf("message validation failed: %v", err)
+				a.mu.Unlock()
+				return
+			}
+			a.mu.Unlock()
+
 			stream, err := a.model.Stream(ctxWithWorkDir, a.history)
 			if err != nil {
 				log.Printf("failed to stream: %v", err)
@@ -302,4 +316,32 @@ func (a *coderAgent) GetHistory() []*schema.Message {
 
 func (a *coderAgent) GetWorkDir() string {
 	return a.workDir
+}
+
+// validateMessageHistory ensures that tool messages are properly preceded by assistant messages with tool calls
+func (a *coderAgent) validateMessageHistory() error {
+	toolCallIDs := make(map[string]bool)
+
+	// First pass: collect all tool call IDs from assistant messages
+	for _, msg := range a.history {
+		if msg.Role == schema.Assistant && len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				toolCallIDs[tc.ID] = true
+			}
+		}
+	}
+
+	// Second pass: validate tool messages
+	for _, msg := range a.history {
+		if msg.Role == schema.Tool {
+			if msg.ToolCallID == "" {
+				return fmt.Errorf("tool message missing tool_call_id")
+			}
+			if !toolCallIDs[msg.ToolCallID] {
+				return fmt.Errorf("tool message with tool_call_id '%s' has no corresponding assistant message with tool calls", msg.ToolCallID)
+			}
+		}
+	}
+
+	return nil
 }
