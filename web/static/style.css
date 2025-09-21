@@ -431,6 +431,7 @@ body {
     padding: 12px;
     display: flex;
     flex-direction: column;
+    min-height: 0;
 }
 
 .quick-actions {
@@ -476,7 +477,28 @@ body {
     font-size: 9px;
     color: #ccc;
     overflow-y: auto;
-    min-height: 200px;
+    min-height: 100px;
+    max-height: 50vh;
+    scrollbar-width: thin;
+    scrollbar-color: #444 #1a1a1a;
+}
+
+.ai-chat-history::-webkit-scrollbar {
+    width: 6px;
+}
+
+.ai-chat-history::-webkit-scrollbar-track {
+    background: #1a1a1a;
+    border-radius: 3px;
+}
+
+.ai-chat-history::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 3px;
+}
+
+.ai-chat-history::-webkit-scrollbar-thumb:hover {
+    background: #555;
 }
 
 .ai-message {
@@ -505,6 +527,8 @@ body {
 .ai-input-container {
     display: flex;
     gap: 6px;
+    flex-shrink: 0;
+    min-height: 32px;
 }
 
 .ai-input-container input {
@@ -1194,7 +1218,8 @@ body {
 
     .ai-chat-history {
         font-size: 8px;
-        min-height: 120px;
+        min-height: 80px;
+        max-height: 30vh;
     }
 
     .ai-input-container input {

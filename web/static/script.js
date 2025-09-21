@@ -712,6 +712,11 @@ document.addEventListener("DOMContentLoaded", function() {
         elements.aiChatHistory.appendChild(messageDiv);
         elements.aiChatHistory.scrollTop = elements.aiChatHistory.scrollHeight;
         state.aiChatHistory.push({ role, content });
+
+        // 优化AI聊天布局
+        setTimeout(() => {
+            optimizeAiChatLayout();
+        }, 50);
     }
 
     // 更新最后一条AI消息
@@ -720,6 +725,11 @@ document.addEventListener("DOMContentLoaded", function() {
         if (lastMessage && lastMessage.querySelector('.ai-role.ai')) {
             lastMessage.lastElementChild.textContent = content;
             elements.aiChatHistory.scrollTop = elements.aiChatHistory.scrollHeight;
+
+            // 优化AI聊天布局
+            setTimeout(() => {
+                optimizeAiChatLayout();
+            }, 50);
         }
     }
 
@@ -888,6 +898,7 @@ document.addEventListener("DOMContentLoaded", function() {
                             setTimeout(() => {
                                 adjustEditorHeight();
                                 adjustSidebarHeight();
+                                optimizeAiChatLayout();
                             }, 100);
                         }
                     }
@@ -910,6 +921,7 @@ document.addEventListener("DOMContentLoaded", function() {
                             if (isActive) {
                                 setTimeout(() => {
                                     adjustEditorHeight();
+                                    optimizeAiChatLayout();
                                 }, 50);
                             }
                         }
@@ -919,6 +931,21 @@ document.addEventListener("DOMContentLoaded", function() {
                 observer.observe(view, { attributes: true });
             }
         });
+
+        // 监听AI聊天历史变化
+        const aiChatHistory = document.getElementById('ai-chat-history');
+        if (aiChatHistory) {
+            const observer = new MutationObserver((mutations) => {
+                optimizeAiChatLayout();
+            });
+
+            observer.observe(aiChatHistory, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                characterData: true
+            });
+        }
     }
 
     // 调整侧边栏高度
@@ -932,6 +959,42 @@ document.addEventListener("DOMContentLoaded", function() {
             sidebar.style.height = `${availableHeight}px`;
             sidebar.style.maxHeight = `${availableHeight}px`;
         }
+    }
+
+    // 优化AI聊天布局，确保输入框始终可见
+    function optimizeAiChatLayout() {
+        const aiContent = document.querySelector('.ai-content');
+        const aiChatHistory = document.querySelector('.ai-chat-history');
+        const aiInputContainer = document.querySelector('.ai-input-container');
+
+        if (!aiContent || !aiChatHistory || !aiInputContainer) return;
+
+        // 计算可用空间
+        const contentRect = aiContent.getBoundingClientRect();
+        const availableHeight = contentRect.height;
+
+        // 计算固定元素的高度
+        const quickActions = aiContent.querySelector('.quick-actions');
+        const quickActionsHeight = quickActions ? quickActions.offsetHeight + 15 : 0; // margin-bottom
+        const inputContainerHeight = aiInputContainer.offsetHeight;
+
+        // 计算聊天历史可用的最大高度
+        const maxChatHistoryHeight = availableHeight - quickActionsHeight - inputContainerHeight - 24; // padding
+
+        // 动态调整聊天历史高度
+        if (maxChatHistoryHeight > 100) {
+            aiChatHistory.style.maxHeight = `${maxChatHistoryHeight}px`;
+            aiChatHistory.style.height = `${Math.min(maxChatHistoryHeight, window.innerHeight * 0.4)}px`;
+        }
+
+        // 确保输入框可见
+        aiInputContainer.style.position = 'relative';
+        aiInputContainer.style.zIndex = '10';
+
+        // 自动滚动到最新消息
+        setTimeout(() => {
+            aiChatHistory.scrollTop = aiChatHistory.scrollHeight;
+        }, 50);
     }
 
     // 全局函数
