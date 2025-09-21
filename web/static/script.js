@@ -72,7 +72,11 @@ document.addEventListener("DOMContentLoaded", function() {
         try {
             const response = await fetch(`/chat/history?session_id=${id}`);
             if (!response.ok) {
-                throw new Error(`Failed to fetch history: ${response.statusText}`);
+                if (response.status === 404) {
+                    throw new Error('Session not found (404)');
+                } else {
+                    throw new Error(`Failed to fetch history: ${response.statusText}`);
+                }
             }
             const history = await response.json();
             chatBox.innerHTML = '';
@@ -126,7 +130,15 @@ document.addEventListener("DOMContentLoaded", function() {
 
         } catch (error) {
             console.error('Failed to load session:', error);
-            addMessage("system", `Error loading session ${id}.`);
+            // 检查是否是404错误（会话不存在）
+            if (error.message.includes('404') || error.message.includes('Not Found')) {
+                addMessage("system", `会话 ${id} 已过期或不存在。已为您开始新会话。`);
+                // 清除无效的会话ID并开始新会话
+                sessionId = null;
+                startNewChat();
+            } else {
+                addMessage("system", `加载会话 ${id} 时出错: ${error.message}`);
+            }
         }
     }
 
