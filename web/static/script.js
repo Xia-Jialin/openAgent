@@ -1307,9 +1307,18 @@ document.addEventListener("DOMContentLoaded", function() {
     // 刷新预览
     async function refreshPreview() {
         try {
-            const htmlContent = await generatePreviewHtml();
-            elements.previewIframe.srcdoc = htmlContent;
-            console.log('预览已刷新');
+            const indexFile = findFileByName('index.html');
+            if (indexFile) {
+                // 如果有index.html文件，使用HTTP路由访问
+                const previewUrl = `/workspace/${state.currentProject}/${indexFile.path}`;
+                elements.previewIframe.src = previewUrl;
+                console.log('预览已刷新 (HTTP路由):', previewUrl);
+            } else {
+                // 否则生成一个默认的预览页面
+                const htmlContent = await generateDefaultPreview();
+                elements.previewIframe.srcdoc = htmlContent;
+                console.log('预览已刷新 (默认页面)');
+            }
         } catch (error) {
             console.error('刷新预览失败:', error);
         }

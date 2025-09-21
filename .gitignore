@@ -3,3 +3,4 @@ manus/
 vendor/
 workspace/
 openagent.db
+sessions.db

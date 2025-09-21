@@ -620,6 +620,142 @@ func main() {
 	// WebSocket端点用于实时预览
 	r.GET("/ws", handleWebSocket)
 
+	// 为workspace文件提供HTTP访问路由
+	r.GET("/workspace/:session_id/*filepath", func(c *gin.Context) {
+		sessionID := c.Param("session_id")
+		filePath := c.Param("filepath")
+
+		// 移除路径前导的斜杠
+		if len(filePath) > 0 && filePath[0] == '/' {
+			filePath = filePath[1:]
+		}
+
+		// 如果路径为空，默认访问index.html
+		if filePath == "" {
+			filePath = "index.html"
+		}
+
+		// 获取会话的工作目录
+		mu.Lock()
+		agent, exists := sessions[sessionID]
+		mu.Unlock()
+
+		if !exists {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+
+		// 构建完整路径
+		workDir := agent.GetWorkDir()
+		fullPath := filepath.Join(workDir, filePath)
+
+		// 安全检查：确保文件在工作目录内
+		if !strings.HasPrefix(fullPath, workDir) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+			return
+		}
+
+		// 检查文件是否存在
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+			return
+		}
+
+		// 根据文件类型设置Content-Type
+		ext := strings.ToLower(filepath.Ext(filePath))
+		switch ext {
+		case ".html":
+			c.Header("Content-Type", "text/html; charset=utf-8")
+		case ".css":
+			c.Header("Content-Type", "text/css; charset=utf-8")
+		case ".js":
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+		case ".json":
+			c.Header("Content-Type", "application/json; charset=utf-8")
+		case ".png":
+			c.Header("Content-Type", "image/png")
+		case ".jpg", ".jpeg":
+			c.Header("Content-Type", "image/jpeg")
+		case ".gif":
+			c.Header("Content-Type", "image/gif")
+		case ".svg":
+			c.Header("Content-Type", "image/svg+xml")
+		default:
+			c.Header("Content-Type", "application/octet-stream")
+		}
+
+		// 提供文件
+		c.File(fullPath)
+	})
+
+	// 为HEAD请求提供支持
+	r.HEAD("/workspace/:session_id/*filepath", func(c *gin.Context) {
+		sessionID := c.Param("session_id")
+		filePath := c.Param("filepath")
+
+		// 移除路径前导的斜杠
+		if len(filePath) > 0 && filePath[0] == '/' {
+			filePath = filePath[1:]
+		}
+
+		// 如果路径为空，默认访问index.html
+		if filePath == "" {
+			filePath = "index.html"
+		}
+
+		// 获取会话的工作目录
+		mu.Lock()
+		agent, exists := sessions[sessionID]
+		mu.Unlock()
+
+		if !exists {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+
+		// 构建完整路径
+		workDir := agent.GetWorkDir()
+		fullPath := filepath.Join(workDir, filePath)
+
+		// 安全检查：确保文件在工作目录内
+		if !strings.HasPrefix(fullPath, workDir) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+			return
+		}
+
+		// 检查文件是否存在
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+			return
+		}
+
+		// 根据文件类型设置Content-Type
+		ext := strings.ToLower(filepath.Ext(filePath))
+		switch ext {
+		case ".html":
+			c.Header("Content-Type", "text/html; charset=utf-8")
+		case ".css":
+			c.Header("Content-Type", "text/css; charset=utf-8")
+		case ".js":
+			c.Header("Content-Type", "application/javascript; charset=utf-8")
+		case ".json":
+			c.Header("Content-Type", "application/json; charset=utf-8")
+		case ".png":
+			c.Header("Content-Type", "image/png")
+		case ".jpg", ".jpeg":
+			c.Header("Content-Type", "image/jpeg")
+		case ".gif":
+			c.Header("Content-Type", "image/gif")
+		case ".svg":
+			c.Header("Content-Type", "image/svg+xml")
+		default:
+			c.Header("Content-Type", "application/octet-stream")
+		}
+
+		// 提供文件
+		c.File(fullPath)
+	})
+
 	// 处理聊天请求
 	r.POST("/chat", func(c *gin.Context) {
 		var userInput struct {
