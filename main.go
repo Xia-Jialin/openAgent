@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 
 	"openAgent/agent"
@@ -32,6 +34,15 @@ var (
 	sessions = make(map[string]agent.Agent)
 	mu       sync.Mutex
 	dbStore  *storage.Storage
+
+	// WebSocket related variables
+	wsUpgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true // Allow all origins for development
+		},
+	}
+	previewClients = make(map[string]*websocket.Conn) // session_id -> websocket connection
+	previewMutex   sync.RWMutex
 )
 
 const baseSystemPrompt = `
@@ -150,6 +161,150 @@ func loadMCPConfig(path string) (*MCPConfig, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// 文件监控结构
+type FileWatcher struct {
+	sessions map[string]context.CancelFunc
+	mu       sync.Mutex
+}
+
+var fileWatcher = &FileWatcher{
+	sessions: make(map[string]context.CancelFunc),
+}
+
+// 监控文件变化
+func (fw *FileWatcher) WatchFiles(sessionID, workDir string) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+
+	// 如果已有监控，先取消
+	if cancel, exists := fw.sessions[sessionID]; exists {
+		cancel()
+		delete(fw.sessions, sessionID)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	fw.sessions[sessionID] = cancel
+
+	go func() {
+		ticker := time.NewTicker(2 * time.Second) // 每2秒检查一次
+		defer ticker.Stop()
+
+		var lastFiles map[string]time.Time
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				currentFiles := make(map[string]time.Time)
+				filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
+					if err != nil {
+						return nil
+					}
+					if !info.IsDir() && !strings.HasPrefix(filepath.Base(path), ".") {
+						relPath, err := filepath.Rel(workDir, path)
+						if err == nil {
+							currentFiles[relPath] = info.ModTime()
+						}
+					}
+					return nil
+				})
+
+				// 检查文件变化
+				if lastFiles != nil {
+					for path, modTime := range currentFiles {
+						if lastModTime, exists := lastFiles[path]; !exists || modTime.After(lastModTime) {
+							// 发送文件变化通知
+							notifyFileChange(sessionID, path)
+						}
+					}
+				}
+
+				lastFiles = currentFiles
+			}
+		}
+	}()
+}
+
+// 停止监控文件
+func (fw *FileWatcher) StopWatching(sessionID string) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+
+	if cancel, exists := fw.sessions[sessionID]; exists {
+		cancel()
+		delete(fw.sessions, sessionID)
+	}
+}
+
+// 发送文件变化通知
+func notifyFileChange(sessionID, filePath string) {
+	previewMutex.RLock()
+	conn, exists := previewClients[sessionID]
+	previewMutex.RUnlock()
+
+	if exists {
+		message := map[string]interface{}{
+			"type":     "file_change",
+			"file":     filePath,
+			"datetime": time.Now().Format(time.RFC3339),
+		}
+
+		if err := conn.WriteJSON(message); err != nil {
+			log.Printf("Failed to send file change notification: %v", err)
+			previewMutex.Lock()
+			delete(previewClients, sessionID)
+			previewMutex.Unlock()
+		}
+	}
+}
+
+// WebSocket处理器
+func handleWebSocket(c *gin.Context) {
+	sessionID := c.Query("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+		return
+	}
+
+	// 升级为WebSocket连接
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	// 注册连接
+	previewMutex.Lock()
+	previewClients[sessionID] = conn
+	previewMutex.Unlock()
+
+	log.Printf("WebSocket client connected for session %s", sessionID)
+
+	// 启动文件监控
+	if agent, exists := sessions[sessionID]; exists {
+		fileWatcher.WatchFiles(sessionID, agent.GetWorkDir())
+	}
+
+	// 保持连接活跃
+	for {
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("WebSocket client disconnected for session %s: %v", sessionID, err)
+			break
+		}
+	}
+
+	// 清理连接
+	previewMutex.Lock()
+	delete(previewClients, sessionID)
+	previewMutex.Unlock()
+
+	// 停止文件监控
+	fileWatcher.StopWatching(sessionID)
 }
 
 // 启动MCP服务器并连接
@@ -461,6 +616,9 @@ func main() {
 			"content": string(content),
 		})
 	})
+
+	// WebSocket端点用于实时预览
+	r.GET("/ws", handleWebSocket)
 
 	// 处理聊天请求
 	r.POST("/chat", func(c *gin.Context) {

@@ -71,13 +71,185 @@ document.addEventListener("DOMContentLoaded", function() {
         isCreatingProject: false,
         creatingAiResponse: false,
         currentAiResponse: '',
-        currentController: null
+        currentController: null,
+        websocket: null,
+        isPreviewLive: false,
+        autoRefreshEnabled: true,
+        lastFileUpdate: null
     };
 
     // 初始化应用
     async function init() {
         await loadProjects();
         setupEventListeners();
+    }
+
+    // WebSocket连接管理
+    function connectWebSocket(sessionId) {
+        // 如果已存在连接，先关闭
+        if (state.websocket) {
+            state.websocket.close();
+            state.websocket = null;
+        }
+
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws?session_id=${sessionId}`;
+
+        try {
+            state.websocket = new WebSocket(wsUrl);
+
+            state.websocket.onopen = () => {
+                console.log('WebSocket连接已建立');
+                state.isPreviewLive = true;
+                updatePreviewStatus();
+            };
+
+            state.websocket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleWebSocketMessage(data);
+            };
+
+            state.websocket.onclose = () => {
+                console.log('WebSocket连接已关闭');
+                state.isPreviewLive = false;
+                state.websocket = null;
+                updatePreviewStatus();
+
+                // 尝试重新连接
+                setTimeout(() => {
+                    if (state.currentProject && !state.websocket) {
+                        connectWebSocket(state.currentProject);
+                    }
+                }, 3000);
+            };
+
+            state.websocket.onerror = (error) => {
+                console.error('WebSocket错误:', error);
+                state.isPreviewLive = false;
+                updatePreviewStatus();
+            };
+        } catch (error) {
+            console.error('WebSocket连接失败:', error);
+            state.isPreviewLive = false;
+        }
+    }
+
+    // 处理WebSocket消息
+    function handleWebSocketMessage(data) {
+        switch (data.type) {
+            case 'file_change':
+                handleFileChange(data.file, data.datetime);
+                break;
+            default:
+                console.log('未知的消息类型:', data.type);
+        }
+    }
+
+    // 处理文件变化
+    function handleFileChange(filePath, datetime) {
+        console.log(`文件变化: ${filePath} at ${datetime}`);
+
+        // 防抖：避免频繁刷新
+        if (state.lastFileUpdate && Date.now() - state.lastFileUpdate < 1000) {
+            return;
+        }
+
+        state.lastFileUpdate = Date.now();
+
+        // 如果是当前打开的文件，更新编辑器内容
+        if (state.currentFile && state.currentFile.path === filePath) {
+            // 可以选择是否自动重新加载文件内容
+            if (state.autoRefreshEnabled) {
+                loadCurrentFileContent();
+            }
+        }
+
+        // 如果在预览视图，自动刷新预览
+        if (state.currentView === 'preview' && state.autoRefreshEnabled) {
+            debouncedRefreshPreview();
+        }
+
+        // 显示文件变化通知
+        showFileChangeNotification(filePath);
+    }
+
+    // 显示文件变化通知
+    function showFileChangeNotification(filePath) {
+        // 检查是否已有通知
+        let notification = document.querySelector('.file-change-notification');
+        if (!notification) {
+            notification = document.createElement('div');
+            notification.className = 'file-change-notification';
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: #28a745;
+                color: white;
+                padding: 10px 15px;
+                border-radius: 5px;
+                z-index: 1000;
+                font-size: 14px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                opacity: 0;
+                transition: opacity 0.3s ease;
+            `;
+            document.body.appendChild(notification);
+        }
+
+        notification.textContent = `📄 文件已更新: ${filePath}`;
+        notification.style.opacity = '1';
+
+        // 3秒后隐藏通知
+        setTimeout(() => {
+            notification.style.opacity = '0';
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.parentNode.removeChild(notification);
+                }
+            }, 300);
+        }, 3000);
+    }
+
+    // 更新预览状态显示
+    function updatePreviewStatus() {
+        const previewHeader = document.querySelector('.preview-title');
+        if (previewHeader) {
+            if (state.isPreviewLive) {
+                previewHeader.innerHTML = '📱 实时预览 <span class="live-indicator" style="color: #28a745;">● LIVE</span>';
+            } else {
+                previewHeader.innerHTML = '📱 实时预览 <span class="live-indicator" style="color: #dc3545;">● OFFLINE</span>';
+            }
+        }
+    }
+
+    // 防抖的预览刷新
+    let refreshTimeout;
+    function debouncedRefreshPreview() {
+        clearTimeout(refreshTimeout);
+        refreshTimeout = setTimeout(() => {
+            refreshPreview();
+        }, 500); // 500ms防抖
+    }
+
+    // 重新加载当前文件内容
+    async function loadCurrentFileContent() {
+        if (!state.currentFile || !state.currentFile.path) return;
+
+        try {
+            const response = await fetch(`/files/read?session_id=${state.currentProject}&path=${encodeURIComponent(state.currentFile.path)}`);
+            const result = await response.json();
+            if (result.success) {
+                state.currentFile.content = result.content || '';
+                elements.codeEditorContent.value = state.currentFile.content;
+                document.querySelector('.save-status').textContent = '● 已同步';
+                setTimeout(() => {
+                    document.querySelector('.save-status').textContent = '● 已保存';
+                }, 1000);
+            }
+        } catch (error) {
+            console.error('重新加载文件失败:', error);
+        }
     }
 
     // 加载项目列表
@@ -172,6 +344,9 @@ document.addEventListener("DOMContentLoaded", function() {
         loadProjectFiles(projectId);
         loadAiChatHistory(projectId);
         clearAiChat(); // 清空当前聊天历史
+
+        // 连接WebSocket进行实时预览
+        connectWebSocket(projectId);
     }
 
     // 删除项目
@@ -1130,44 +1305,234 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     // 刷新预览
-    function refreshPreview() {
-        // 这里应该更新iframe的内容
-        // 现在先显示一个简单的HTML页面
-        const htmlContent = generatePreviewHtml();
-        elements.previewIframe.srcdoc = htmlContent;
+    async function refreshPreview() {
+        try {
+            const htmlContent = await generatePreviewHtml();
+            elements.previewIframe.srcdoc = htmlContent;
+            console.log('预览已刷新');
+        } catch (error) {
+            console.error('刷新预览失败:', error);
+        }
     }
 
     // 生成预览HTML
-    function generatePreviewHtml() {
-        return `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>预览 - ${state.currentProject || '项目'}</title>
-                <style>
-                    body { font-family: Arial, sans-serif; margin: 20px; }
-                    .preview-header { background: #007acc; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-                    .preview-content { background: #f8f9fa; padding: 20px; border-radius: 8px; }
-                </style>
-            </head>
-            <body>
-                <div class="preview-header">
-                    <h1>${state.currentProject || '项目预览'}</h1>
-                    <p>这是项目的实时预览</p>
-                </div>
-                <div class="preview-content">
-                    <h2>项目内容</h2>
-                    <p>这里显示项目的实际渲染结果。</p>
-                    <div id="app"></div>
-                </div>
-                <script>
-                    // 这里可以插入生成的JavaScript代码
-                    console.log('Preview loaded');
-                </script>
-            </body>
-            </html>
-        `;
+    async function generatePreviewHtml() {
+        // 尝试找到index.html文件
+        const indexFile = findFileByName('index.html');
+        let htmlContent = '';
+
+        if (indexFile) {
+            // 如果有index.html文件，使用其内容
+            htmlContent = await loadFileContent(indexFile.path);
+        } else {
+            // 否则生成一个默认的预览页面
+            htmlContent = generateDefaultPreview();
+        }
+
+        return htmlContent;
+    }
+
+    // 查找文件
+    function findFileByName(fileName) {
+        function searchInFiles(files) {
+            for (const file of files) {
+                if (file.type === 'file' && file.name === fileName) {
+                    return file;
+                } else if (file.type === 'folder' && file.children) {
+                    const found = searchInFiles(file.children);
+                    if (found) return found;
+                }
+            }
+            return null;
+        }
+        return searchInFiles(state.files);
+    }
+
+    // 加载文件内容
+    async function loadFileContent(filePath) {
+        try {
+            const response = await fetch(`/files/read?session_id=${state.currentProject}&path=${encodeURIComponent(filePath)}`);
+            const result = await response.json();
+            if (result.success) {
+                return result.content || '';
+            }
+        } catch (error) {
+            console.error('加载文件失败:', error);
+        }
+        return '';
+    }
+
+    // 生成默认预览页面
+    function generateDefaultPreview() {
+        const cssFiles = state.files.filter(f => f.type === 'file' && f.name.endsWith('.css'));
+        const jsFiles = state.files.filter(f => f.type === 'file' && f.name.endsWith('.js'));
+
+        return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>项目预览 - ${state.currentProject || '项目'}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        .header h1 {
+            margin: 0;
+            color: #2c3e50;
+            font-size: 2.5em;
+        }
+        .header p {
+            margin: 10px 0 0 0;
+            color: #7f8c8d;
+            font-size: 1.2em;
+        }
+        .content {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            border-left: 4px solid #3498db;
+        }
+        .card h3 {
+            margin: 0 0 10px 0;
+            color: #2c3e50;
+        }
+        .file-list {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .file-list h3 {
+            margin: 0 0 15px 0;
+            color: #2c3e50;
+        }
+        .file-item {
+            display: flex;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #ecf0f1;
+        }
+        .file-item:last-child {
+            border-bottom: none;
+        }
+        .file-icon {
+            margin-right: 10px;
+            font-size: 1.2em;
+        }
+        .live-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: ${state.isPreviewLive ? '#28a745' : '#dc3545'};
+            color: white;
+            padding: 10px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            z-index: 1000;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+        /* 动态加载的CSS */
+        ${cssFiles.length > 0 ? cssFiles.map(file => `<link rel="stylesheet" href="data:text/css;base64,${btoa(file.content || '')}">`).join('\n') : ''}
+    </style>
+</head>
+<body>
+    <div class="live-indicator">
+        ${state.isPreviewLive ? '🟢 LIVE' : '🔴 OFFLINE'}
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <h1>🚀 项目预览</h1>
+            <p>${state.currentProject ? '会话: ' + state.currentProject : '实时预览模式'}</p>
+            <p>最后更新: ${new Date().toLocaleString('zh-CN')}</p>
+        </div>
+
+        <div class="content">
+            <div class="card">
+                <h3>📁 项目文件</h3>
+                <p>共有 <strong>${state.files.length}</strong> 个文件</p>
+                <p>支持HTML、CSS、JavaScript实时预览</p>
+            </div>
+
+            <div class="card">
+                <h3>⚡ 实时更新</h3>
+                <p>文件变化时自动刷新预览</p>
+                <p>支持热重载和同步编辑</p>
+            </div>
+        </div>
+
+        <div class="file-list">
+            <h3>📄 文件列表</h3>
+            ${state.files.map(file => {
+                if (file.type === 'file') {
+                    return `<div class="file-item">
+                        <span class="file-icon">📄</span>
+                        <span>${file.name}</span>
+                    </div>`;
+                } else {
+                    return `<div class="file-item">
+                        <span class="file-icon">📁</span>
+                        <span><strong>${file.name}</strong> (${file.children.length} 个文件)</span>
+                    </div>`;
+                }
+            }).join('')}
+        </div>
+
+        <div id="app">
+            <!-- 应用内容将在这里显示 -->
+        </div>
+    </div>
+
+    <!-- 动态加载的JavaScript -->
+    ${jsFiles.length > 0 ? jsFiles.map(file => `<script>${file.content || ''}</script>`).join('\n') : ''}
+
+    <script>
+        console.log('预览页面已加载');
+        console.log('WebSocket状态: ${state.isPreviewLive ? '已连接' : '未连接'}');
+
+        // 简单的实时更新测试
+        if (${state.isPreviewLive}) {
+            setInterval(() => {
+                const timeElement = document.querySelector('.live-time');
+                if (timeElement) {
+                    timeElement.textContent = new Date().toLocaleTimeString('zh-CN');
+                }
+            }, 1000);
+        }
+    </script>
+</body>
+</html>`;
     }
 
     // 切换设备

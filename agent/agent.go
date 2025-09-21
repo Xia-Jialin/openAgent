@@ -107,6 +107,7 @@ func (a *coderAgent) Run(ctx context.Context, input string) (*schema.Message, er
 			return nil, fmt.Errorf("message validation failed: %w", err)
 		}
 
+		
 		msg, err := a.model.Generate(ctxWithWorkDir, a.history)
 		if err != nil {
 			return nil, err
@@ -171,7 +172,8 @@ func (a *coderAgent) StreamRun(ctx context.Context, input string) (<-chan *schem
 				a.mu.Unlock()
 				return
 			}
-			a.mu.Unlock()
+
+						a.mu.Unlock()
 
 			stream, err := a.model.Stream(ctxWithWorkDir, a.history)
 			if err != nil {
@@ -320,6 +322,14 @@ func (a *coderAgent) GetWorkDir() string {
 
 // validateMessageHistory ensures that tool messages are properly preceded by assistant messages with tool calls
 func (a *coderAgent) validateMessageHistory() error {
+	// First, validate that no message has empty content
+	for i, msg := range a.history {
+		if msg.Content == "" {
+			log.Printf("Warning: Message %d has empty content, fixing it", i)
+			msg.Content = "[No content]"
+		}
+	}
+
 	toolCallIDs := make(map[string]bool)
 
 	// First pass: collect all tool call IDs from assistant messages
